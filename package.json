@@ -2,6 +2,7 @@
   "name": "auctionswipe",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.30.3",
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,green --kill-others-on-fail \"pnpm --filter @auctionswipe/server dev\" \"pnpm --filter @auctionswipe/web dev\"",
     "dev:server": "pnpm --filter @auctionswipe/server dev",

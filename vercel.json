@@ -1,0 +1,6 @@
+{
+  "buildCommand": "turbo run build --filter=@auctionswipe/web",
+  "outputDirectory": "apps/web/.next",
+  "installCommand": "pnpm install",
+  "framework": "nextjs"
+}
