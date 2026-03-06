@@ -3,32 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
-  },
-  "dependencies": {
-    "next": "16.1.6",
-    "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "dev": "concurrently -n server,web -c cyan,green --kill-others-on-fail \"pnpm --filter @auctionswipe/server dev\" \"pnpm --filter @auctionswipe/web dev\"",
+    "dev:server": "pnpm --filter @auctionswipe/server dev",
+    "dev:web": "pnpm --filter @auctionswipe/web dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,sol,json,md}\""
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.1.6",
-    "tailwindcss": "^4",
-    "typescript": "^5"
-  },
-  "ignoreScripts": [
-    "sharp",
-    "unrs-resolver"
-  ],
-  "trustedDependencies": [
-    "sharp",
-    "unrs-resolver"
-  ]
+    "concurrently": "^9",
+    "turbo": "^2",
+    "typescript": "^5",
+    "prettier": "^3",
+    "eslint": "^9"
+  }
 }

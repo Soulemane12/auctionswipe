@@ -1,0 +1,22 @@
+{
+  "name": "@auctionswipe/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:arb-sepolia": "hardhat run scripts/deployAll.ts --network arb_sepolia",
+    "deploy:robinhood": "hardhat run scripts/deployAll.ts --network robinhood_testnet",
+    "deploy:fhe": "hardhat run scripts/deployFHE.ts --network arb_sepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5",
+    "hardhat": "^2",
+    "ts-node": "^10",
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@fhenixprotocol/cofhe-contracts": "^0.1.0",
+    "@openzeppelin/contracts": "^5"
+  }
+}
