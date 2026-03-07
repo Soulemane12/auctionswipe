@@ -7,7 +7,12 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
 
 const ADMIN_ADDRESS = (process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "").toLowerCase();
-const SERVER_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
+const FACTORY_ADDRESS = (process.env.NEXT_PUBLIC_FACTORY_ADDRESS_ROBINHOOD ?? "") as `0x${string}`;
+
+const factoryAbi = parseAbi([
+  "function getAuctions(uint256 offset, uint256 limit) external view returns (address[])",
+  "function nextId() external view returns (uint256)",
+]);
 
 const auctionAbi = parseAbi([
   "function activate() external",
@@ -26,22 +31,35 @@ const STATE_LABELS = ["🔒 LOCKED", "⏳ COUNTDOWN", "🔥 ACTIVE", "✅ ENDED"
 
 export default function AdminPage() {
   const { address, isConnected } = useAccount();
-  const [auctions, setAuctions] = useState<string[]>([]);
   const [manualAddr, setManualAddr] = useState("");
+  const [extra, setExtra] = useState<string[]>([]);
 
   const isAdmin = isConnected && address?.toLowerCase() === ADMIN_ADDRESS;
 
-  useEffect(() => {
-    fetch(`${SERVER_URL}/auctions`)
-      .then((r) => r.json())
-      .then((data: { address: string }[]) => setAuctions(data.map((a) => a.address)))
-      .catch(() => {}); // server may not be running
-  }, []);
+  // Read total auction count from factory
+  const { data: nextId } = useReadContract({
+    address: FACTORY_ADDRESS,
+    abi: factoryAbi,
+    functionName: "nextId",
+    query: { enabled: !!FACTORY_ADDRESS },
+  });
+
+  // Read all auction addresses from factory
+  const { data: onChainAddresses } = useReadContract({
+    address: FACTORY_ADDRESS,
+    abi: factoryAbi,
+    functionName: "getAuctions",
+    args: [0n, nextId ?? 0n],
+    query: { enabled: !!FACTORY_ADDRESS && !!nextId && nextId > 0n },
+  });
+
+  const chainList = (onChainAddresses as `0x${string}`[] | undefined) ?? [];
+  const auctions = [...chainList, ...extra.filter((a) => !chainList.includes(a as `0x${string}`))];
 
   const addManual = () => {
     const addr = manualAddr.trim();
     if (!addr.startsWith("0x") || addr.length !== 42) return;
-    if (!auctions.includes(addr)) setAuctions((prev) => [addr, ...prev]);
+    if (!auctions.includes(addr)) setExtra((prev) => [addr, ...prev]);
     setManualAddr("");
   };
 
@@ -92,7 +110,7 @@ export default function AdminPage() {
 
         {auctions.length === 0 ? (
           <p className="text-white/40 text-sm">
-            No auctions yet. Deploy contracts and paste an auction address above, or start the server to auto-populate.
+            {FACTORY_ADDRESS ? "Loading auctions from chain…" : "No factory address set. Deploy contracts first."}
           </p>
         ) : (
           <div className="space-y-4">
