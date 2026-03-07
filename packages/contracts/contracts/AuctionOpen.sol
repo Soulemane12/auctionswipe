@@ -64,7 +64,7 @@ contract AuctionOpen is ReentrancyGuard, Pausable, Ownable {
 
     function activate() external onlyOwner whenNotPaused {
         require(state == State.LOCKED, "already activated");
-        startTime = block.timestamp + 150; // 2m30 countdown
+        startTime = block.timestamp;
         endTime = startTime + durationSeconds;
         state = State.COUNTDOWN;
         emit Activated(startTime, endTime);

@@ -30,12 +30,12 @@ const robinhoodTestnet = defineChain({
 const _RAW_KEY    = process.env.DEPLOYER_PRIVATE_KEY ?? "";
 const PRIVATE_KEY = (_RAW_KEY.startsWith("0x") ? _RAW_KEY : `0x${_RAW_KEY}`) as `0x${string}`;
 const FACTORY_ADDR  = (process.env.NEXT_PUBLIC_FACTORY_ADDRESS_ROBINHOOD ?? "") as `0x${string}`;
-const TOKEN_ADDRESS = "0xa4a4763a141dC696A020922E7E97C7f0AA5E44b5" as `0x${string}`;
+const TOKEN_ADDRESS = (process.env.NEXT_PUBLIC_TOKEN_ADDRESS || "0x6E1F46D3be9BdE4Ad03F7d2A21c30f920E23dE75") as `0x${string}`;
 
 const AUCTION_PARAMS = {
   title:     "Nike Air Max 1 OG (size 10)",
   imageURI:  "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800",
-  duration:  60 * 60,          // 1 hour in seconds
+  duration:  60,               // 1 minute in seconds
   reserve:   1n * 10n ** 18n,  // 1 ATKN reserve price
   increment: 1n * 10n ** 17n,  // 0.1 ATKN minimum raise
 };
