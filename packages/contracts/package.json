@@ -7,12 +7,15 @@
     "test": "hardhat test",
     "deploy:arb-sepolia": "hardhat run scripts/deployAll.ts --network arb_sepolia",
     "deploy:robinhood": "hardhat run scripts/deployAll.ts --network robinhood_testnet",
-    "deploy:fhe": "hardhat run scripts/deployFHE.ts --network arb_sepolia"
+    "deploy:fhe": "hardhat run scripts/deployFHE.ts --network arb_sepolia",
+    "create:auction": "tsx scripts/createAuction.ts"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5",
+    "dotenv": "^16.6.1",
     "hardhat": "^2",
     "ts-node": "^10",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   },
   "dependencies": {

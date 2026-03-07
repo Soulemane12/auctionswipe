@@ -1,6 +1,13 @@
-import { getDefaultConfig } from "@rainbow-me/rainbowkit";
+import { connectorsForWallets } from "@rainbow-me/rainbowkit";
+import {
+  metaMaskWallet,
+  walletConnectWallet,
+  coinbaseWallet,
+  rainbowWallet,
+} from "@rainbow-me/rainbowkit/wallets";
+import { createConfig } from "wagmi";
 import { arbitrumSepolia } from "wagmi/chains";
-import { defineChain } from "viem";
+import { defineChain, http } from "viem";
 
 export const robinhoodTestnet = defineChain({
   id: 46630,
@@ -15,9 +22,24 @@ export const robinhoodTestnet = defineChain({
   testnet: true,
 });
 
-export const wagmiConfig = getDefaultConfig({
-  appName: "AuctionSwipe",
-  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "demo",
-  chains: [arbitrumSepolia, robinhoodTestnet],
+const PROJECT_ID = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "demo";
+
+const connectors = connectorsForWallets(
+  [
+    {
+      groupName: "Recommended",
+      wallets: [metaMaskWallet, coinbaseWallet, rainbowWallet, walletConnectWallet],
+    },
+  ],
+  { appName: "AuctionSwipe", projectId: PROJECT_ID },
+);
+
+export const wagmiConfig = createConfig({
+  connectors,
+  chains: [robinhoodTestnet, arbitrumSepolia],
+  transports: {
+    [robinhoodTestnet.id]: http("https://rpc.testnet.chain.robinhood.com"),
+    [arbitrumSepolia.id]:  http(),
+  },
   ssr: true,
 });

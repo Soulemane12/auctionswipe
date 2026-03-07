@@ -1,5 +1,11 @@
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
+import * as dotenv from "dotenv";
+import * as path from "path";
+
+// Load .env from monorepo root
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+dotenv.config(); // fallback to local .env if present
 
 // Support both naming conventions in .env
 const PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY || process.env.PRIVATE_KEY || "";

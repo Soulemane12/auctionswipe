@@ -7,7 +7,7 @@ import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { createPublicClient, webSocket, http, parseAbi } from "viem";
+import { createPublicClient, webSocket, http, parseAbi, defineChain } from "viem";
 import { arbitrumSepolia } from "viem/chains";
 import { initAgent, onLeaderChanged, setPolicy, removePolicy, getPolicies } from "./agent";
 
@@ -20,24 +20,35 @@ const io = new Server(httpServer, { cors: { origin: "*" } });
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const CHAIN    = process.env.CHAIN || "arb";
+const CHAIN    = process.env.CHAIN || "robinhood";
 const FACTORY  = process.env.FACTORY_ADDRESS as `0x${string}` | undefined;
-const RPC_HTTP = process.env.ALCHEMY_ARB_SEPOLIA_RPC || process.env.RPC_HTTP || "";
-const RPC_WS   = process.env.ALCHEMY_ARB_SEPOLIA_WS  || process.env.RPC_WS;
+const RPC_HTTP = process.env.ROBINHOOD_RPC || process.env.ALCHEMY_ARB_SEPOLIA_RPC || process.env.RPC_HTTP || "";
+const RPC_WS   = process.env.ROBINHOOD_WS  || process.env.ALCHEMY_ARB_SEPOLIA_WS  || process.env.RPC_WS;
 
 if (!FACTORY) console.warn("⚠  FACTORY_ADDRESS not set — event watching disabled");
 
-// ── Viem client ───────────────────────────────────────────────────────────────
+// ── Viem chain + client ───────────────────────────────────────────────────────
+
+const robinhoodTestnet = defineChain({
+  id: 46630,
+  name: "Robinhood Chain Testnet",
+  nativeCurrency: { name: "RHT", symbol: "RHT", decimals: 18 },
+  rpcUrls: { default: { http: [process.env.ROBINHOOD_RPC || "https://rpc.testnet.chain.robinhood.com"] } },
+});
+
+const activeChain = CHAIN === "arb" ? arbitrumSepolia : robinhoodTestnet;
 
 const client =
   CHAIN === "arb" && RPC_WS
-    ? createPublicClient({ chain: arbitrumSepolia, transport: webSocket(RPC_WS) })
-    : createPublicClient({ chain: arbitrumSepolia, transport: http(RPC_HTTP) });
+    ? createPublicClient({ chain: activeChain, transport: webSocket(RPC_WS) })
+    : createPublicClient({ chain: activeChain, transport: http(RPC_HTTP) });
 
 // ── ABIs ──────────────────────────────────────────────────────────────────────
 
 const factoryAbi = parseAbi([
   "event AuctionCreated(uint256 indexed auctionId, address indexed auction, address indexed seller, address currency, string metadataURI, string imageURI)",
+  "function getAuctions(uint256 offset, uint256 limit) external view returns (address[] memory)",
+  "function nextId() external view returns (uint256)",
 ]);
 
 const auctionAbi = parseAbi([
@@ -46,6 +57,10 @@ const auctionAbi = parseAbi([
   "event LeaderChanged(address indexed leader, uint256 amount)",
   "event Ended(address indexed winner, uint256 amount)",
   "event Settled(address indexed seller, address indexed winner, uint256 sellerPayout, uint256 fee)",
+  "function metadataURI() external view returns (string)",
+  "function imageURI() external view returns (string)",
+  "function seller() external view returns (address)",
+  "function currency() external view returns (address)",
 ]);
 
 // ── In-memory store ───────────────────────────────────────────────────────────
@@ -198,6 +213,45 @@ io.on("connection", (socket) => {
   socket.on("disconnect",    () => console.log("client disconnected:", socket.id));
 });
 
+// ── Backfill existing auctions from chain ─────────────────────────────────────
+
+async function backfill(factory: `0x${string}`) {
+  try {
+    const total = await client.readContract({ address: factory, abi: factoryAbi, functionName: "nextId" }) as bigint;
+    if (total === 0n) return;
+
+    const addresses = await client.readContract({
+      address: factory,
+      abi: factoryAbi,
+      functionName: "getAuctions",
+      args: [0n, total],
+    }) as `0x${string}`[];
+
+    for (let i = 0; i < addresses.length; i++) {
+      const addr = addresses[i];
+      if (auctionStore.find((a) => a.address.toLowerCase() === addr.toLowerCase())) continue;
+
+      try {
+        const [metadataURI, imageURI, seller, currency] = await Promise.all([
+          client.readContract({ address: addr, abi: auctionAbi, functionName: "metadataURI" }) as Promise<string>,
+          client.readContract({ address: addr, abi: auctionAbi, functionName: "imageURI" }) as Promise<string>,
+          client.readContract({ address: addr, abi: auctionAbi, functionName: "seller" }) as Promise<string>,
+          client.readContract({ address: addr, abi: auctionAbi, functionName: "currency" }) as Promise<string>,
+        ]);
+
+        auctionStore.push({ address: addr, auctionId: String(i), seller, currency, metadataURI, imageURI, createdAt: 0 });
+        watchAuction(addr);
+        console.log(`backfilled auction ${i}: ${addr}`);
+      } catch {
+        // skip if individual read fails
+      }
+    }
+    console.log(`backfill complete — ${auctionStore.length} auction(s) loaded`);
+  } catch (e) {
+    console.warn("backfill failed:", (e as Error).message);
+  }
+}
+
 // ── Indexer + Agent init ──────────────────────────────────────────────────────
 
 async function main() {
@@ -207,6 +261,9 @@ async function main() {
     console.log("server ready (set FACTORY_ADDRESS to enable indexing)");
     return;
   }
+
+  // Load all already-deployed auctions before watching for new ones
+  await backfill(FACTORY);
 
   client.watchContractEvent({
     address: FACTORY,
