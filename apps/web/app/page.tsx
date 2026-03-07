@@ -1,48 +1,58 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { socket } from "@/lib/socket";
+import { useReadContracts, useReadContract } from "wagmi";
+import { parseAbi } from "viem";
 
-interface AuctionRecord {
-  address: string;
-  auctionId: string;
-  seller: string;
-  currency: string;
-  metadataURI: string;
-  imageURI: string;
-}
+const FACTORY_ADDRESS = (process.env.NEXT_PUBLIC_FACTORY_ADDRESS_ROBINHOOD ?? "") as `0x${string}`;
 
-const SERVER_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
+const factoryAbi = parseAbi([
+  "function getAuctions(uint256 offset, uint256 limit) external view returns (address[])",
+  "function nextId() external view returns (uint256)",
+]);
+
+const auctionAbi = parseAbi([
+  "function metadataURI() external view returns (string)",
+  "function imageURI() external view returns (string)",
+  "function seller() external view returns (address)",
+  "function currency() external view returns (address)",
+]);
 
 export default function SwipeFeed() {
-  const [auctions, setAuctions] = useState<AuctionRecord[]>([]);
+  const { data: nextId } = useReadContract({
+    address: FACTORY_ADDRESS,
+    abi: factoryAbi,
+    functionName: "nextId",
+    query: { enabled: !!FACTORY_ADDRESS },
+  });
 
-  useEffect(() => {
-    fetch(`${SERVER_URL}/auctions`)
-      .then((r) => r.json())
-      .then(setAuctions)
-      .catch(() => {
-        // Server not running yet — page stays in empty state
-      });
+  const { data: addresses } = useReadContract({
+    address: FACTORY_ADDRESS,
+    abi: factoryAbi,
+    functionName: "getAuctions",
+    args: [0n, nextId ?? 0n],
+    query: { enabled: !!FACTORY_ADDRESS && !!nextId && nextId > 0n },
+  });
 
-    socket.on("AuctionCreated", (args: Record<string, unknown>) => {
-      setAuctions((prev) => [
-        ...prev,
-        {
-          address:     args.auction as string,
-          auctionId:   String(args.auctionId ?? ""),
-          seller:      args.seller as string,
-          currency:    args.currency as string,
-          metadataURI: args.metadataURI as string,
-          imageURI:    args.imageURI as string,
-        },
-      ]);
-    });
+  const addrList = (addresses as `0x${string}`[] | undefined) ?? [];
 
-    return () => { socket.off("AuctionCreated"); };
-  }, []);
+  const { data: metaResults } = useReadContracts({
+    contracts: addrList.flatMap((addr) => [
+      { address: addr, abi: auctionAbi, functionName: "metadataURI" as const },
+      { address: addr, abi: auctionAbi, functionName: "imageURI" as const },
+      { address: addr, abi: auctionAbi, functionName: "seller" as const },
+    ]),
+    query: { enabled: addrList.length > 0 },
+  });
+
+  const auctions = addrList.map((addr, i) => ({
+    address:     addr,
+    auctionId:   String(i),
+    metadataURI: (metaResults?.[i * 3]?.result as string) ?? "",
+    imageURI:    (metaResults?.[i * 3 + 1]?.result as string) ?? "",
+    seller:      (metaResults?.[i * 3 + 2]?.result as string) ?? "",
+  }));
 
   return (
     <div className="relative">
@@ -61,8 +71,8 @@ export default function SwipeFeed() {
       <div className="h-screen overflow-y-scroll snap-y snap-mandatory">
         {auctions.length === 0 ? (
           <div className="h-screen snap-start flex flex-col items-center justify-center gap-4 bg-black">
-            <p className="text-4xl">🔒</p>
-            <p className="text-white/40 text-lg">No auctions yet</p>
+            <p className="text-4xl">{FACTORY_ADDRESS ? "⏳" : "🔒"}</p>
+            <p className="text-white/40 text-lg">{FACTORY_ADDRESS ? "Loading auctions…" : "No auctions yet"}</p>
           </div>
         ) : (
           auctions.map((a) => <AuctionCard key={a.address} auction={a} />)
@@ -72,7 +82,7 @@ export default function SwipeFeed() {
   );
 }
 
-function AuctionCard({ auction }: { auction: AuctionRecord }) {
+function AuctionCard({ auction }: { auction: { address: string; auctionId: string; metadataURI: string; imageURI: string; seller: string } }) {
   const shortAddr = (addr: string) =>
     addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "";
 
