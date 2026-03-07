@@ -100,6 +100,17 @@ export default function AuctionDetail({
 
   const decimals = tokenDecimals ? Number(tokenDecimals) : 18;
 
+  // Minimum valid bid: max(reservePrice, highestBid + minIncrement)
+  const minBidRaw = (() => {
+    const r = reservePrice as bigint | undefined;
+    const h = highestBid as bigint | undefined;
+    const m = minIncrement as bigint | undefined;
+    if (!r) return undefined;
+    const fromHighest = h && m ? h + m : 0n;
+    return fromHighest > r ? fromHighest : r;
+  })();
+  const minBidFormatted = minBidRaw ? formatUnits(minBidRaw, decimals) : undefined;
+
   // ── Writes ────────────────────────────────────────────────────────────────
 
   const { writeContract, isPending, data: txHash } = useWriteContract();
@@ -275,13 +286,23 @@ export default function AuctionDetail({
               </div>
             ) : (
               <>
-                <input
-                  type="number"
-                  placeholder={`Amount in ${tokenSymbol as string ?? "tokens"}`}
-                  value={bidAmount}
-                  onChange={(e) => { setBidAmount(e.target.value); setApprovalDone(false); }}
-                  className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-white/50"
-                />
+                <div className="relative">
+                  <input
+                    type="number"
+                    placeholder={minBidFormatted ? `Min bid: ${minBidFormatted}` : `Amount in ${tokenSymbol as string ?? "tokens"}`}
+                    value={bidAmount}
+                    onChange={(e) => { setBidAmount(e.target.value); setApprovalDone(false); }}
+                    className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-white/50"
+                  />
+                  {minBidFormatted && !bidAmount && (
+                    <button
+                      onClick={() => setBidAmount(minBidFormatted)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-white/40 hover:text-white/80 transition-colors"
+                    >
+                      use min
+                    </button>
+                  )}
+                </div>
 
                 {/* Approve → Bid two-step */}
                 {!approvalDone && needsApproval ? (
@@ -329,7 +350,7 @@ export default function AuctionDetail({
                 <div key={b.txHash} className="flex justify-between text-sm p-3 bg-white/5 rounded-lg">
                   <span className="text-white/70">{b.amount} {tokenSymbol as string ?? "tokens"}</span>
                   <a
-                    href={`https://sepolia.arbiscan.io/tx/${b.txHash}`}
+                    href={`https://testnet.explorer.robinhoodchain.com/tx/${b.txHash}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-mono text-xs text-white/30 hover:text-white/70"
