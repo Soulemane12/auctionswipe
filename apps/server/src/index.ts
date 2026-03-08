@@ -9,7 +9,7 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { createPublicClient, webSocket, http, parseAbi, defineChain } from "viem";
 import { arbitrumSepolia } from "viem/chains";
-import { initAgent, onLeaderChanged, setPolicy, removePolicy, getPolicies } from "./agent";
+import { initAgent, onLeaderChanged, setPolicy, removePolicy, getPolicies, isAgentReady, getAgentAddress, triggerPolicy } from "./agent";
 import { initMetrics, reportAuctionCreated, reportActivated, reportBidPlaced, reportSettled } from "./metrics";
 
 const app = express();
@@ -137,11 +137,7 @@ function watchAuction(address: `0x${string}`) {
 
         // Trigger auto-bid agent
         if (l.args.leader && l.args.amount !== undefined) {
-          onLeaderChanged(
-            address,
-            l.args.leader as string,
-            l.args.amount as bigint,
-          ).catch(console.error);
+          onLeaderChanged(address).catch(console.error);
         }
       }
     },
@@ -190,8 +186,14 @@ app.get("/auctions", (_, res) => res.json(auctionStore));
 
 // Agent policy management
 app.get("/agent", (_, res) => res.json(getPolicies()));
+app.get("/agent/status", (_, res) => res.json({ ready: isAgentReady(), agentAddress: getAgentAddress() }));
 
-app.post("/agent/watch", (req, res) => {
+app.post("/agent/watch", async (req, res) => {
+  if (!isAgentReady()) {
+    res.status(503).json({ error: "agent unavailable: set a valid AGENT_PRIVATE_KEY on the server" });
+    return;
+  }
+
   const { auctionAddress, maxBid, increment, cooldownMs, currencyAddress } = req.body;
   if (!auctionAddress || !maxBid || !increment || !currencyAddress) {
     res.status(400).json({ error: "required: auctionAddress, maxBid, increment, currencyAddress" });
@@ -203,7 +205,13 @@ app.post("/agent/watch", (req, res) => {
     cooldownMs:      Number(cooldownMs ?? 5000),
     currencyAddress: currencyAddress as `0x${string}`,
   });
-  res.json({ ok: true });
+  let triggered = false;
+  try {
+    triggered = await triggerPolicy(auctionAddress);
+  } catch (err) {
+    console.warn("agent: initial trigger failed:", (err as Error).message);
+  }
+  res.json({ ok: true, triggered });
 });
 
 app.delete("/agent/watch/:address", (req, res) => {
@@ -263,7 +271,7 @@ async function backfill(factory: `0x${string}`) {
 // ── Indexer + Agent init ──────────────────────────────────────────────────────
 
 async function main() {
-  initAgent(RPC_HTTP);
+  initAgent(RPC_HTTP, activeChain);
   initMetrics(activeChain.id);
 
   if (!FACTORY) {

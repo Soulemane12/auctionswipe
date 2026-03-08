@@ -50,7 +50,19 @@ interface LiveEvent {
   ts: number;
 }
 
+interface AgentPolicySnapshot {
+  maxBid: string;
+  increment: string;
+  cooldownMs: number;
+}
+
+interface AgentStatus {
+  ready: boolean;
+  agentAddress?: string | null;
+}
+
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -70,6 +82,14 @@ export default function AuctionDetail({
   const [approvalDone, setApprovalDone] = useState(false);
   const [wonNotif, setWonNotif]   = useState(false);
   const [lostNotif, setLostNotif] = useState(false);
+  const [agentReady, setAgentReady] = useState(false);
+  const [agentAddress, setAgentAddress] = useState<string | null>(null);
+  const [agentPolicy, setAgentPolicy] = useState<AgentPolicySnapshot | null>(null);
+  const [agentMaxBid, setAgentMaxBid] = useState("");
+  const [agentIncrement, setAgentIncrement] = useState("");
+  const [agentCooldown, setAgentCooldown] = useState("5");
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
   const prevStateRef = useRef(-1);
   const lastRecordedBidHashRef = useRef<`0x${string}` | undefined>(undefined);
   const lastApprovedHashRef = useRef<`0x${string}` | undefined>(undefined);
@@ -120,6 +140,16 @@ export default function AuctionDetail({
   })();
   const minBidFormatted = minBidRaw ? formatUnits(minBidRaw, decimals) : undefined;
 
+  useEffect(() => {
+    if (!agentMaxBid && minBidFormatted) setAgentMaxBid(minBidFormatted);
+  }, [agentMaxBid, minBidFormatted]);
+
+  useEffect(() => {
+    if (!agentIncrement && minIncrement) {
+      setAgentIncrement(formatUnits(minIncrement as bigint, decimals));
+    }
+  }, [agentIncrement, decimals, minIncrement]);
+
   // ── Writes ────────────────────────────────────────────────────────────────
 
   const { writeContract: writeApprove, isPending: isApprovePending, data: approveHash } = useWriteContract();
@@ -165,6 +195,42 @@ export default function AuctionDetail({
   }, [bidConfirmed, bidHash, auctionAddress, userAddress, refetchAllowance, refetchBid, refetchLeader, refetchState]);
 
   // ── Socket ────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAgentState = async () => {
+      try {
+        const [statusRes, policiesRes] = await Promise.all([
+          fetch(`${WS_URL}/agent/status`),
+          fetch(`${WS_URL}/agent`),
+        ]);
+
+        const status = await statusRes.json() as AgentStatus;
+        const policies = await policiesRes.json() as Record<string, AgentPolicySnapshot>;
+        if (cancelled) return;
+
+        setAgentReady(!!status.ready);
+        setAgentAddress(status.agentAddress ?? null);
+
+        const existing = policies[auctionAddress.toLowerCase()] ?? null;
+        setAgentPolicy(existing);
+        if (existing) {
+          setAgentMaxBid(formatUnits(BigInt(existing.maxBid), decimals));
+          setAgentIncrement(formatUnits(BigInt(existing.increment), decimals));
+          setAgentCooldown(String(Math.max(1, Math.floor(existing.cooldownMs / 1000))));
+        }
+      } catch {
+        if (cancelled) return;
+        setAgentReady(false);
+      }
+    };
+
+    void loadAgentState();
+    return () => {
+      cancelled = true;
+    };
+  }, [auctionAddress, decimals]);
 
   useEffect(() => {
     recordView(auctionAddress);
@@ -277,11 +343,65 @@ export default function AuctionDetail({
     : true;
   const isActive = stateNum === 2;
   const isPending = isApprovePending || isBidPending;
+  const isAgentEnabled = !!agentPolicy;
 
   const fmtTime = (secs: number) =>
     `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`;
 
   const short = (s: string) => s ? `${s.slice(0, 6)}…${s.slice(-4)}` : "—";
+
+  async function handleEnableAgent() {
+    if (!tokenAddr || !agentMaxBid || !agentIncrement) return;
+
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      const payload = {
+        auctionAddress,
+        currencyAddress: tokenAddr,
+        maxBid: parseUnits(agentMaxBid, decimals).toString(),
+        increment: parseUnits(agentIncrement, decimals).toString(),
+        cooldownMs: Math.max(1, Number(agentCooldown || "5")) * 1000,
+      };
+
+      const res = await fetch(`${WS_URL}/agent/watch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "failed to enable auto-bid");
+      }
+
+      setAgentPolicy({
+        maxBid: payload.maxBid,
+        increment: payload.increment,
+        cooldownMs: payload.cooldownMs,
+      });
+      addEvent(data.triggered ? "Auto-bid agent enabled and bidding live" : "Auto-bid agent enabled");
+    } catch (err) {
+      setAgentError((err as Error).message);
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function handleDisableAgent() {
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      const res = await fetch(`${WS_URL}/agent/watch/${auctionAddress}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("failed to disable auto-bid");
+      setAgentPolicy(null);
+      addEvent("Auto-bid agent disabled");
+    } catch (err) {
+      setAgentError((err as Error).message);
+    } finally {
+      setAgentBusy(false);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -447,6 +567,87 @@ export default function AuctionDetail({
                 )}
               </>
             )}
+          </div>
+        )}
+
+        {/* Auto-bid agent */}
+        {isActive && (
+          <div className="space-y-3 p-4 border border-white/10 rounded-xl bg-white/5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">Auto-bid Agent</p>
+                <p className="text-xs text-white/40 mt-1">
+                  Runs from the server agent wallet{agentAddress ? ` ${short(agentAddress)}` : ""} and automatically chases the lead up to your limit.
+                </p>
+              </div>
+              <span className={`shrink-0 text-xs font-semibold px-3 py-1 rounded-full ${isAgentEnabled ? "bg-green-950 text-green-300" : "bg-zinc-900 text-zinc-400"}`}>
+                {isAgentEnabled ? "LIVE" : agentReady ? "READY" : "OFFLINE"}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <label className="space-y-1">
+                <span className="text-xs text-white/40">Max bid</span>
+                <input
+                  type="number"
+                  value={agentMaxBid}
+                  onChange={(e) => setAgentMaxBid(e.target.value)}
+                  placeholder={minBidFormatted ?? "0"}
+                  className="w-full bg-black/30 border border-white/15 rounded-xl px-3 py-2 text-sm text-white placeholder-white/25 focus:outline-none focus:border-white/40"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs text-white/40">Raise by</span>
+                <input
+                  type="number"
+                  value={agentIncrement}
+                  onChange={(e) => setAgentIncrement(e.target.value)}
+                  placeholder={minIncrement ? formatUnits(minIncrement as bigint, decimals) : "0"}
+                  className="w-full bg-black/30 border border-white/15 rounded-xl px-3 py-2 text-sm text-white placeholder-white/25 focus:outline-none focus:border-white/40"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs text-white/40">Cooldown (sec)</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={agentCooldown}
+                  onChange={(e) => setAgentCooldown(e.target.value)}
+                  className="w-full bg-black/30 border border-white/15 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-white/40"
+                />
+              </label>
+            </div>
+
+            {agentError && (
+              <p className="text-sm text-red-300">{agentError}</p>
+            )}
+
+            {!agentReady && (
+              <p className="text-sm text-yellow-300">
+                Agent is unavailable on the server. Set a valid `AGENT_PRIVATE_KEY` and restart the server.
+              </p>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleEnableAgent}
+                disabled={!agentReady || agentBusy || !agentMaxBid || !agentIncrement}
+                className="flex-1 bg-cyan-300 text-black font-semibold py-3 rounded-xl disabled:opacity-40 hover:bg-cyan-200 transition-colors"
+              >
+                {agentBusy && !isAgentEnabled ? "Enabling…" : isAgentEnabled ? "Update Auto-Bid" : "Enable Auto-Bid"}
+              </button>
+              {isAgentEnabled && (
+                <button
+                  onClick={handleDisableAgent}
+                  disabled={agentBusy}
+                  className="px-4 py-3 rounded-xl border border-white/20 text-white/80 font-semibold disabled:opacity-40 hover:border-white/40"
+                >
+                  {agentBusy ? "Stopping…" : "Disable"}
+                </button>
+              )}
+            </div>
           </div>
         )}
 
