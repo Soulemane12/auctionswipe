@@ -33,6 +33,7 @@ const auctionAbi = parseAbi([
 const STATE_LABELS = ["LOCKED", "COUNTDOWN", "ACTIVE", "ENDED", "SETTLED"];
 const STATE_COLORS = ["#71767b", "#f4b400", "#00e676", "#448aff", "#e040fb"];
 const STATE_BG     = ["#71767b15", "#f4b40015", "#00e67615", "#448aff15", "#e040fb15"];
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 interface SellerRow {
   auction:       string;
@@ -441,6 +442,8 @@ function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: s
   const stateNum = state !== undefined ? Number(state) : -1;
   const stateColor = STATE_COLORS[stateNum] ?? "#71767b";
   const stateBg    = STATE_BG[stateNum] ?? "#71767b15";
+  const highestBidRaw = highestBid as bigint | undefined;
+  const hasLiveBid = !!highestBidder && (highestBidder as string).toLowerCase() !== ZERO_ADDRESS && highestBidRaw !== undefined && highestBidRaw > 0n;
 
   useEffect(() => {
     const target = stateNum === 1 ? startTime : stateNum === 2 ? endTime : null;
@@ -551,14 +554,18 @@ function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: s
         {/* Bid info */}
         {(stateNum === 2 || stateNum === 3 || stateNum === 4) && highestBid !== undefined && (
           <p style={{ fontSize: 13, color: "#536471", margin: "0 0 10px" }}>
-            Top bid:{" "}
-            <span style={{ color: "#00e676", fontWeight: 700 }}>
-              {(Number(highestBid) / 1e18).toFixed(2)} tkn
-            </span>
-            {highestBidder && (
-              <span style={{ marginLeft: 6 }}>
-                by {(highestBidder as string).slice(0, 6)}…{(highestBidder as string).slice(-4)}
-              </span>
+            {hasLiveBid ? (
+              <>
+                Top bid:{" "}
+                <span style={{ color: "#00e676", fontWeight: 700 }}>
+                  {(Number(highestBid) / 1e18).toFixed(2)} tkn
+                </span>
+                <span style={{ marginLeft: 6 }}>
+                  by {(highestBidder as string).slice(0, 6)}…{(highestBidder as string).slice(-4)}
+                </span>
+              </>
+            ) : (
+              <span>No bids yet</span>
             )}
           </p>
         )}
@@ -585,7 +592,7 @@ function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: s
                 </ActionBtn>
               ) : (
                 <span style={{ fontSize: 11, color: "#f4b400", textAlign: "center" }}>
-                  ⏳ Waiting for chain ({waitingSecs}s)…
+                  ⏳ Waiting for the next block before settle is available ({waitingSecs}s)…
                 </span>
               )}
             </div>

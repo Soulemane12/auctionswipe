@@ -6,8 +6,10 @@ import { parseAbi } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
 import { socket } from "@/lib/socket";
+import { getAllBiddedAuctions } from "@/lib/history";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const auctionAbi = parseAbi([
   "function metadataURI() view returns (string)",
@@ -24,13 +26,6 @@ interface DuneWonRow  { auction: string; payout_tokens: number; block_time: stri
 interface AgentPolicy { auctionAddress: string; maxBid: string; increment: string; cooldownMs: number; }
 interface OutbidToast { id: number; auction: string; amount: string; }
 
-function getAllBiddedAuctions(): string[] {
-  if (typeof window === "undefined") return [];
-  return Object.keys(localStorage)
-    .filter((k) => k.startsWith("bids:"))
-    .map((k) => k.replace("bids:", ""));
-}
-
 const FONT = "system-ui,-apple-system,sans-serif";
 const BG   = "#000";
 const BORDER = "1px solid #2f3336";
@@ -40,36 +35,54 @@ export default function Dashboard() {
   const [tab, setTab]             = useState<Tab>("bids");
   const [toasts, setToasts]       = useState<OutbidToast[]>([]);
   const [duneBids, setDuneBids]   = useState<DuneBidRow[]>([]);
-  const [duneWon, setDuneWon]     = useState<DuneWonRow[]>([]);
+  const [duneWon]                 = useState<DuneWonRow[]>([]);
   const [duneFallback, setDuneFallback] = useState(false);
-  const [duneLoading, setDuneLoading]   = useState(false);
-  const [policies, setPolicies]         = useState<Record<string, AgentPolicy>>({});
-  const [agentLoading, setAgentLoading] = useState(false);
-  const [localAuctions, setLocalAuctions] = useState<string[]>([]);
+  const [duneLoadedFor, setDuneLoadedFor] = useState<string | null>(null);
+  const [policies, setPolicies]         = useState<Record<string, AgentPolicy> | null>(null);
   // Track the known leader per auction; only show outbid toast when user is knocked off top
   const leaderRef = useRef<Record<string, string>>({});
-
-  useEffect(() => { setLocalAuctions(getAllBiddedAuctions()); }, []);
+  const localAuctions = getAllBiddedAuctions(address);
 
   useEffect(() => {
     if (!address) return;
-    setDuneLoading(true);
+    let cancelled = false;
     fetch(`/api/dune/user?address=${address}`)
       .then((r) => r.json())
-      .then((d) => { setDuneFallback(!!d.fallback); setDuneBids(d.rows ?? []); })
-      .catch(() => setDuneFallback(true))
-      .finally(() => setDuneLoading(false));
+      .then((d) => {
+        if (cancelled) return;
+        setDuneFallback(!!d.fallback);
+        setDuneBids(d.rows ?? []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDuneFallback(true);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setDuneLoadedFor(address);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [address]);
 
   useEffect(() => {
-    if (tab !== "agent") return;
-    setAgentLoading(true);
+    if (tab !== "agent" || policies !== null) return;
+    let cancelled = false;
     fetch(`${WS_URL}/agent`)
       .then((r) => r.json())
-      .then((d) => setPolicies(d ?? {}))
-      .catch(() => {})
-      .finally(() => setAgentLoading(false));
-  }, [tab]);
+      .then((d) => {
+        if (cancelled) return;
+        setPolicies(d ?? {});
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPolicies({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, policies]);
 
   useEffect(() => {
     if (!address || localAuctions.length === 0) return;
@@ -112,7 +125,9 @@ export default function Dashboard() {
 
   const duneAddrs  = duneBids.map((r) => r.auction?.toLowerCase()).filter(Boolean);
   const allAuctions = [...new Set([...duneAddrs, ...localAuctions])];
-  const botCount    = Object.keys(policies).length;
+  const duneLoading = !!address && duneLoadedFor !== address;
+  const agentLoading = tab === "agent" && policies === null;
+  const botCount    = Object.keys(policies ?? {}).length;
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
@@ -234,7 +249,7 @@ export default function Dashboard() {
         {/* Tab content */}
         {tab === "bids"  && <BidsTab  address={address!} duneBids={duneBids} duneFallback={duneFallback} duneLoading={duneLoading} allAuctions={allAuctions} />}
         {tab === "won"   && <WonTab   duneWon={duneWon} duneFallback={duneFallback} duneLoading={duneLoading} />}
-        {tab === "agent" && <AgentTab policies={policies} loading={agentLoading} />}
+        {tab === "agent" && <AgentTab policies={policies ?? {}} loading={agentLoading} />}
       </div>
     </div>
   );
@@ -288,7 +303,9 @@ function BidCard({ auctionAddress, userAddress, duneBids }: {
   const { data: highestBidder } = useReadContract({ address: addr, abi: auctionAbi, functionName: "highestBidder" });
 
   const stateNum  = state !== undefined ? Number(state) : -1;
-  const isLeading = (highestBidder as string)?.toLowerCase() === userAddress.toLowerCase();
+  const highestBidRaw = highestBid as bigint | undefined;
+  const hasLiveBid = !!highestBidder && (highestBidder as string).toLowerCase() !== ZERO_ADDRESS && highestBidRaw !== undefined && highestBidRaw > 0n;
+  const isLeading = hasLiveBid && (highestBidder as string)?.toLowerCase() === userAddress.toLowerCase();
   const duneRow   = duneBids.find((r) => r.auction?.toLowerCase() === auctionAddress.toLowerCase());
 
   const STATE_LABELS: Record<number, string> = { 0: "Locked", 1: "Countdown", 2: "Live", 3: "Ended", 4: "Settled" };
@@ -340,12 +357,12 @@ function BidCard({ auctionAddress, userAddress, duneBids }: {
           {highestBid !== undefined && (
             <span style={{
               fontSize: 13, fontWeight: 700,
-              color: isLeading ? "#00e676" : "#f87171",
+              color: !hasLiveBid ? "#9ca3af" : isLeading ? "#00e676" : "#f87171",
               padding: "3px 10px", borderRadius: 50,
-              background: isLeading ? "rgba(0,230,118,0.1)" : "rgba(248,113,113,0.1)",
-              border: `1px solid ${isLeading ? "rgba(0,230,118,0.25)" : "rgba(248,113,113,0.25)"}`,
+              background: !hasLiveBid ? "rgba(156,163,175,0.1)" : isLeading ? "rgba(0,230,118,0.1)" : "rgba(248,113,113,0.1)",
+              border: `1px solid ${!hasLiveBid ? "rgba(156,163,175,0.25)" : isLeading ? "rgba(0,230,118,0.25)" : "rgba(248,113,113,0.25)"}`,
             }}>
-              {isLeading ? "Leading" : "Outbid"} · {(Number(highestBid) / 1e18).toFixed(2)} tkn
+              {!hasLiveBid ? "No bids yet" : isLeading ? "Leading" : "Outbid"}{hasLiveBid ? ` · ${(Number(highestBid) / 1e18).toFixed(2)} tkn` : ""}
             </span>
           )}
           {duneRow && (

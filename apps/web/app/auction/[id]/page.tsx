@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useEffect, useRef, useState } from "react";
-import { useAccount, useReadContract, useWriteContract } from "wagmi";
+import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { parseAbi, parseUnits, formatUnits } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
@@ -50,6 +50,8 @@ interface LiveEvent {
   ts: number;
 }
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AuctionDetail({
@@ -69,6 +71,9 @@ export default function AuctionDetail({
   const [wonNotif, setWonNotif]   = useState(false);
   const [lostNotif, setLostNotif] = useState(false);
   const prevStateRef = useRef(-1);
+  const lastRecordedBidHashRef = useRef<`0x${string}` | undefined>(undefined);
+  const lastApprovedHashRef = useRef<`0x${string}` | undefined>(undefined);
+  const submittedBidAmountRef = useRef("");
 
   // ── Contract reads ────────────────────────────────────────────────────────
 
@@ -117,35 +122,53 @@ export default function AuctionDetail({
 
   // ── Writes ────────────────────────────────────────────────────────────────
 
-  const { writeContract, isPending, data: txHash } = useWriteContract();
+  const { writeContract: writeApprove, isPending: isApprovePending, data: approveHash } = useWriteContract();
+  const { writeContract: writeBid, isPending: isBidPending, data: bidHash } = useWriteContract();
+  const { isSuccess: approveConfirmed } = useWaitForTransactionReceipt({ hash: approveHash });
+  const { isSuccess: bidConfirmed } = useWaitForTransactionReceipt({ hash: bidHash });
 
   const handleApprove = () => {
     if (!tokenAddr || !bidAmount) return;
     const amount = parseUnits(bidAmount, decimals);
-    writeContract({ address: tokenAddr, abi: erc20Abi, functionName: "approve", args: [addr, amount], gas: 100_000n });
+    writeApprove({ address: tokenAddr, abi: erc20Abi, functionName: "approve", args: [addr, amount], gas: 100_000n });
   };
 
   const handleBid = () => {
     if (!bidAmount) return;
+    submittedBidAmountRef.current = bidAmount;
     const amount = parseUnits(bidAmount, decimals);
-    writeContract({ address: addr, abi: auctionAbi, functionName: "bid", args: [amount], gas: 300_000n });
+    writeBid({ address: addr, abi: auctionAbi, functionName: "bid", args: [amount], gas: 300_000n });
   };
 
-  // Record bid in localStorage when tx hash arrives
+  // Mark approval complete after the approval tx confirms
   useEffect(() => {
-    if (txHash && bidAmount) {
-      recordBid(auctionAddress, { amount: bidAmount, txHash, timestamp: Date.now() });
-      setLocalBids(getBids(auctionAddress));
-      setApprovalDone(true);
-      setTimeout(() => { refetchState(); refetchLeader(); refetchBid(); refetchAllowance(); }, 4000);
-    }
-  }, [txHash]);
+    if (!approveConfirmed || !approveHash || approveHash === lastApprovedHashRef.current) return;
+    lastApprovedHashRef.current = approveHash;
+    setApprovalDone(true);
+    void refetchAllowance();
+  }, [approveConfirmed, approveHash, refetchAllowance]);
+
+  // Record a local bid only after the bid tx confirms on-chain
+  useEffect(() => {
+    const submittedBidAmount = submittedBidAmountRef.current;
+    if (!bidConfirmed || !bidHash || !submittedBidAmount || bidHash === lastRecordedBidHashRef.current) return;
+    lastRecordedBidHashRef.current = bidHash;
+    recordBid(auctionAddress, userAddress, { amount: submittedBidAmount, txHash: bidHash, timestamp: Date.now() });
+    setLocalBids(getBids(auctionAddress, userAddress));
+    submittedBidAmountRef.current = "";
+    setTimeout(() => {
+      void refetchState();
+      void refetchLeader();
+      void refetchBid();
+      void refetchAllowance();
+    }, 4000);
+  }, [bidConfirmed, bidHash, auctionAddress, userAddress, refetchAllowance, refetchBid, refetchLeader, refetchState]);
 
   // ── Socket ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     recordView(auctionAddress);
-    setLocalBids(getBids(auctionAddress));
+    setLocalBids(getBids(auctionAddress, userAddress));
 
     socket.emit("join:auction", auctionAddress);
 
@@ -190,7 +213,7 @@ export default function AuctionDetail({
       socket.off("auction:ended");
       socket.off("auction:settled");
     };
-  }, [auctionAddress]);
+  }, [auctionAddress, userAddress, refetchBid, refetchLeader, refetchState]);
 
   // ── Countdown ─────────────────────────────────────────────────────────────
 
@@ -246,11 +269,14 @@ export default function AuctionDetail({
   // ── Derived values ────────────────────────────────────────────────────────
 
   const chip = STATE_CHIP[stateNum] ?? { label: "…", color: "bg-zinc-800 text-zinc-400" };
-  const formattedHighest = highestBid ? formatUnits(highestBid as bigint, decimals) : "—";
+  const highestBidRaw = highestBid as bigint | undefined;
+  const hasLeader = !!highestBidder && (highestBidder as string).toLowerCase() !== ZERO_ADDRESS && highestBidRaw !== undefined && highestBidRaw > 0n;
+  const formattedHighest = hasLeader && highestBidRaw !== undefined ? formatUnits(highestBidRaw, decimals) : "—";
   const needsApproval = allowance !== undefined && bidAmount
     ? (allowance as bigint) < parseUnits(bidAmount || "0", decimals)
     : true;
   const isActive = stateNum === 2;
+  const isPending = isApprovePending || isBidPending;
 
   const fmtTime = (secs: number) =>
     `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`;
@@ -338,7 +364,7 @@ export default function AuctionDetail({
         <div className="flex justify-between items-center p-4 bg-white/5 rounded-xl">
           <div>
             <p className="text-white/40 text-xs mb-1">Current Leader</p>
-            <p className="font-mono text-sm">{short(highestBidder as string)}</p>
+            <p className="font-mono text-sm">{hasLeader ? short(highestBidder as string) : "No bids yet"}</p>
           </div>
           <div className="text-right">
             <p className="text-white/40 text-xs mb-1">Highest Bid</p>
@@ -356,7 +382,7 @@ export default function AuctionDetail({
         {(stateNum === 3 || stateNum === 4) && (
           <div className={`p-4 rounded-xl border ${stateNum === 4 ? "bg-blue-950/40 border-blue-800/40" : "bg-green-950/40 border-green-800/40"}`}>
             <p className="text-xs text-white/40 mb-1">{stateNum === 4 ? "Auction settled" : "Auction ended — awaiting settlement"}</p>
-            {highestBidder && (highestBidder as string) !== "0x0000000000000000000000000000000000000000" ? (
+            {hasLeader ? (
               <>
                 <p className="font-semibold text-sm">
                   Winner: <span className="font-mono">{short(highestBidder as string)}</span>
@@ -408,7 +434,7 @@ export default function AuctionDetail({
                     disabled={isPending || !bidAmount}
                     className="w-full bg-white/20 text-white font-semibold py-3 rounded-xl disabled:opacity-40 hover:bg-white/30 transition-colors"
                   >
-                    {isPending ? "Approving…" : "1. Approve"}
+                    {isApprovePending ? "Approving…" : "1. Approve"}
                   </button>
                 ) : (
                   <button
@@ -416,7 +442,7 @@ export default function AuctionDetail({
                     disabled={isPending || !bidAmount}
                     className="w-full bg-white text-black font-semibold py-3 rounded-xl disabled:opacity-40 hover:bg-white/90 transition-colors"
                   >
-                    {isPending ? "Placing bid…" : "2. Place Bid"}
+                    {isBidPending ? "Placing bid…" : "2. Place Bid"}
                   </button>
                 )}
               </>
