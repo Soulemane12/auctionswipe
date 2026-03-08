@@ -10,6 +10,7 @@ import { Server } from "socket.io";
 import { createPublicClient, webSocket, http, parseAbi, defineChain } from "viem";
 import { arbitrumSepolia } from "viem/chains";
 import { initAgent, onLeaderChanged, setPolicy, removePolicy, getPolicies } from "./agent";
+import { initMetrics, reportAuctionCreated, reportActivated, reportBidPlaced, reportSettled } from "./metrics";
 
 const app = express();
 app.use(cors());
@@ -95,6 +96,7 @@ function watchAuction(address: `0x${string}`) {
           startTime: Number(l.args.startTime),
           endTime:   Number(l.args.endTime),
         });
+        reportActivated(address, l.args.startTime as bigint, l.args.endTime as bigint).catch(() => {});
       }
     },
   });
@@ -113,6 +115,9 @@ function watchAuction(address: `0x${string}`) {
           blockNumber: Number(l.blockNumber),
           timestamp:   Date.now(),
         });
+        if (l.args.bidder && l.args.amount !== undefined) {
+          reportBidPlaced(address, l.args.bidder as string, l.args.amount as bigint).catch(() => {});
+        }
       }
     },
   });
@@ -168,6 +173,9 @@ function watchAuction(address: `0x${string}`) {
           sellerPayout: l.args.sellerPayout?.toString(),
           fee:          l.args.fee?.toString(),
         });
+        if (l.args.winner && l.args.sellerPayout !== undefined && l.args.fee !== undefined) {
+          reportSettled(address, l.args.winner as string, l.args.sellerPayout as bigint, l.args.fee as bigint).catch(() => {});
+        }
       }
     },
   });
@@ -256,6 +264,7 @@ async function backfill(factory: `0x${string}`) {
 
 async function main() {
   initAgent(RPC_HTTP);
+  initMetrics(activeChain.id);
 
   if (!FACTORY) {
     console.log("server ready (set FACTORY_ADDRESS to enable indexing)");
@@ -283,6 +292,7 @@ async function main() {
         auctionStore.push(record);
         io.emit("AuctionCreated", l.args);
         watchAuction(record.address as `0x${string}`);
+        reportAuctionCreated(record.address, record.seller, record.currency, record.metadataURI).catch(() => {});
         console.log("new auction:", record.address);
       }
     },

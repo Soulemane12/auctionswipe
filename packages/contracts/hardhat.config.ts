@@ -23,6 +23,10 @@ const ARB_SEPOLIA_WS =
 const ROBINHOOD_RPC =
   process.env.ROBINHOOD_RPC || "https://rpc.testnet.chain.robinhood.com";
 
+const ETH_SEPOLIA_RPC =
+  process.env.ETH_SEPOLIA_RPC ||
+  (ALCHEMY_KEY ? `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}` : "https://rpc.sepolia.org");
+
 const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
 
 const config: HardhatUserConfig = {
@@ -54,6 +58,11 @@ const config: HardhatUserConfig = {
       url: ROBINHOOD_RPC,
       accounts,
       chainId: 46630,
+    },
+    eth_sepolia: {
+      url: ETH_SEPOLIA_RPC,
+      accounts,
+      chainId: 11155111,
     },
   },
   paths: {

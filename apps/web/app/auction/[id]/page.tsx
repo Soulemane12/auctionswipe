@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import { parseAbi, parseUnits, formatUnits } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
@@ -66,6 +66,9 @@ export default function AuctionDetail({
   const [localBids, setLocalBids] = useState<BidRecord[]>([]);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [approvalDone, setApprovalDone] = useState(false);
+  const [wonNotif, setWonNotif]   = useState(false);
+  const [lostNotif, setLostNotif] = useState(false);
+  const prevStateRef = useRef(-1);
 
   // ── Contract reads ────────────────────────────────────────────────────────
 
@@ -99,6 +102,7 @@ export default function AuctionDetail({
   });
 
   const decimals = tokenDecimals ? Number(tokenDecimals) : 18;
+  const stateNum = state !== undefined ? Number(state) : -1;
 
   // Minimum valid bid: max(reservePrice, highestBid + minIncrement)
   const minBidRaw = (() => {
@@ -118,13 +122,13 @@ export default function AuctionDetail({
   const handleApprove = () => {
     if (!tokenAddr || !bidAmount) return;
     const amount = parseUnits(bidAmount, decimals);
-    writeContract({ address: tokenAddr, abi: erc20Abi, functionName: "approve", args: [addr, amount] });
+    writeContract({ address: tokenAddr, abi: erc20Abi, functionName: "approve", args: [addr, amount], gas: 100_000n });
   };
 
   const handleBid = () => {
     if (!bidAmount) return;
     const amount = parseUnits(bidAmount, decimals);
-    writeContract({ address: addr, abi: auctionAbi, functionName: "bid", args: [amount] });
+    writeContract({ address: addr, abi: auctionAbi, functionName: "bid", args: [amount], gas: 300_000n });
   };
 
   // Record bid in localStorage when tx hash arrives
@@ -195,14 +199,45 @@ export default function AuctionDetail({
     const targetTime = stateNum === 1 ? startTime : stateNum === 2 ? endTime : null;
     if (!targetTime) { setCountdown(null); return; }
 
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
     const tick = () => {
       const secs = Number(targetTime) - Math.floor(Date.now() / 1000);
-      setCountdown(secs > 0 ? secs : 0);
+      if (secs <= 0) {
+        setCountdown(0);
+        // Poll on-chain every 2s until currentState() flips to ENDED
+        if (!pollId) pollId = setInterval(() => refetchState(), 2000);
+      } else {
+        setCountdown(secs);
+      }
     };
     tick();
     const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      if (pollId) clearInterval(pollId);
+    };
   }, [state, startTime, endTime]);
+
+  // Show winner/loser notification when auction ends (live transition OR page load after ended)
+  useEffect(() => {
+    const sn = stateNum;
+    const isEnded = sn === 3 || sn === 4;
+    const wasActive = prevStateRef.current === 2;
+    const isFirstLoad = prevStateRef.current === -1;
+    if (isEnded && (wasActive || isFirstLoad)) {
+      const winner = (highestBidder as string)?.toLowerCase();
+      const noWinner = !winner || winner === "0x0000000000000000000000000000000000000000";
+      if (userAddress && !noWinner && winner === userAddress.toLowerCase()) {
+        setWonNotif(true);
+      } else if (userAddress && localBids.length > 0) {
+        // User bid but either didn't win or bid didn't confirm — show notification regardless
+        setLostNotif(true);
+        setTimeout(() => setLostNotif(false), 30000);
+      }
+    }
+    if (sn !== -1) prevStateRef.current = sn;
+  }, [stateNum, highestBidder, userAddress, localBids.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function addEvent(text: string) {
     setLiveEvents((prev) => [{ type: "info", text, ts: Date.now() }, ...prev].slice(0, 20));
@@ -210,7 +245,6 @@ export default function AuctionDetail({
 
   // ── Derived values ────────────────────────────────────────────────────────
 
-  const stateNum = state !== undefined ? Number(state) : -1;
   const chip = STATE_CHIP[stateNum] ?? { label: "…", color: "bg-zinc-800 text-zinc-400" };
   const formattedHighest = highestBid ? formatUnits(highestBid as bigint, decimals) : "—";
   const needsApproval = allowance !== undefined && bidAmount
@@ -230,6 +264,47 @@ export default function AuctionDetail({
         <Link href="/" className="text-white/50 hover:text-white text-sm">← Back</Link>
         <ConnectButton />
       </div>
+
+      {/* Winner notification */}
+      {wonNotif && (
+        <div className="mx-4 mt-4 rounded-2xl overflow-hidden" style={{ background: "linear-gradient(135deg, #0f4c2a, #166534)", border: "1px solid rgba(74,222,128,0.4)", boxShadow: "0 8px 32px rgba(74,222,128,0.2)" }}>
+          <div className="flex items-center gap-4 p-5">
+            <span style={{ fontSize: 40 }}>🏆</span>
+            <div className="flex-1 min-w-0">
+              <p className="font-black text-green-300 text-lg leading-tight">You won this auction!</p>
+              <p className="text-green-400/70 text-sm mt-1">
+                Final bid: {formattedHighest} {(tokenSymbol as string) ?? "tokens"}
+              </p>
+              <p className="text-green-400/50 text-xs mt-0.5">
+                The seller will settle and release your item soon.
+              </p>
+            </div>
+            <button onClick={() => setWonNotif(false)} className="text-green-400/40 hover:text-green-400 text-xl self-start leading-none">×</button>
+          </div>
+          <Link
+            href="/dashboard"
+            className="flex items-center justify-center gap-2 py-3 font-bold text-sm text-black"
+            style={{ background: "linear-gradient(90deg, #4ade80, #22d3ee)" }}
+          >
+            View in Dashboard →
+          </Link>
+        </div>
+      )}
+
+      {/* Lost notification */}
+      {lostNotif && (
+        <div className="mx-4 mt-4 p-4 rounded-2xl flex items-center gap-4" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)" }}>
+          <span style={{ fontSize: 32 }}>😔</span>
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-red-300 text-base">You were outbid</p>
+            <p className="text-red-400/60 text-xs mt-0.5">Better luck next time!</p>
+          </div>
+          <Link href="/dashboard" className="text-sm font-bold px-4 py-2 rounded-full shrink-0" style={{ background: "rgba(239,68,68,0.2)", color: "#f87171", border: "1px solid rgba(239,68,68,0.3)" }}>
+            Dashboard →
+          </Link>
+          <button onClick={() => setLostNotif(false)} className="text-red-400/40 hover:text-red-400 text-xl leading-none">×</button>
+        </div>
+      )}
 
       <div className="max-w-lg mx-auto p-6 space-y-6">
         {/* Image */}
@@ -276,6 +351,28 @@ export default function AuctionDetail({
           <span>Reserve: {reservePrice ? formatUnits(reservePrice as bigint, decimals) : "—"} {tokenSymbol as string ?? ""}</span>
           <span>Min increment: {minIncrement ? formatUnits(minIncrement as bigint, decimals) : "—"}</span>
         </div>
+
+        {/* Ended / Settled result */}
+        {(stateNum === 3 || stateNum === 4) && (
+          <div className={`p-4 rounded-xl border ${stateNum === 4 ? "bg-blue-950/40 border-blue-800/40" : "bg-green-950/40 border-green-800/40"}`}>
+            <p className="text-xs text-white/40 mb-1">{stateNum === 4 ? "Auction settled" : "Auction ended — awaiting settlement"}</p>
+            {highestBidder && (highestBidder as string) !== "0x0000000000000000000000000000000000000000" ? (
+              <>
+                <p className="font-semibold text-sm">
+                  Winner: <span className="font-mono">{short(highestBidder as string)}</span>
+                  {userAddress && (highestBidder as string).toLowerCase() === userAddress.toLowerCase() && (
+                    <span className="ml-2 text-green-400 font-bold">← You won! 🎉</span>
+                  )}
+                </p>
+                <p className="text-white/60 text-sm">
+                  Winning bid: {formattedHighest} {(tokenSymbol as string) ?? "tokens"}
+                </p>
+              </>
+            ) : (
+              <p className="text-white/50 text-sm">No bids — auction ended with no winner</p>
+            )}
+          </div>
+        )}
 
         {/* Bid form */}
         {isActive && (

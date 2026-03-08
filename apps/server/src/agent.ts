@@ -131,6 +131,8 @@ export async function onLeaderChanged(
     if ((allowance as bigint) < nextBid) {
       console.log(`agent: approving ${policy.maxBid} of ${policy.currencyAddress}`);
       await walletClient.writeContract({
+        chain: null,
+        account: agentAddress,
         address: policy.currencyAddress,
         abi: erc20Abi,
         functionName: "approve",
@@ -140,6 +142,8 @@ export async function onLeaderChanged(
 
     // Place bid
     const hash = await walletClient.writeContract({
+      chain: null,
+      account: agentAddress,
       address: auctionAddress as `0x${string}`,
       abi: auctionAbi,
       functionName: "bid",
