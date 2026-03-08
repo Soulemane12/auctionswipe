@@ -71,8 +71,8 @@ contract AuctionOpen is ReentrancyGuard, Pausable, Ownable {
     }
 
     function currentState() public view returns (State) {
-        if (state == State.COUNTDOWN && block.timestamp >= startTime) return State.ACTIVE;
-        if ((state == State.COUNTDOWN || state == State.ACTIVE) && block.timestamp >= endTime) return State.ENDED;
+        if ((state == State.COUNTDOWN || state == State.ACTIVE) && endTime != 0 && block.timestamp >= endTime) return State.ENDED;
+        if (state == State.COUNTDOWN && startTime != 0 && block.timestamp >= startTime) return State.ACTIVE;
         return state;
     }
 

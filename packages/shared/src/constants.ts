@@ -10,9 +10,9 @@ export const NETWORKS = {
   robinhoodTestnet: {
     chainId: 46630,
     name: "Robinhood Chain Testnet",
-    rpc: process.env.ROBINHOOD_RPC ?? "https://testnet.rpc.robinhoodchain.com",
-    ws: process.env.ROBINHOOD_WS ?? "wss://testnet.rpc.robinhoodchain.com",
-    explorer: "https://testnet.explorer.robinhoodchain.com",
+    rpc: process.env.ROBINHOOD_RPC ?? "https://rpc.testnet.chain.robinhood.com",
+    ws: process.env.ROBINHOOD_WS ?? "wss://rpc.testnet.chain.robinhood.com",
+    explorer: "https://explorer.testnet.chain.robinhood.com",
   },
 } as const;
 

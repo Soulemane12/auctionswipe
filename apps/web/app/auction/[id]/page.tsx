@@ -1,12 +1,15 @@
 "use client";
 
 import { use, useEffect, useRef, useState } from "react";
-import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
+import { useAccount, useBlockNumber, useReadContract, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { parseAbi, parseUnits, formatUnits } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
 import { socket } from "@/lib/socket";
-import { recordBid, recordView, getBids, BidRecord } from "@/lib/history";
+import { recordBid, recordView, getBids, recordWin, BidRecord } from "@/lib/history";
+import { robinhoodTestnet } from "@/lib/wagmi";
+import { normalizeWalletError } from "@/lib/walletError";
+import { getServerUrl } from "@/lib/serverUrl";
 
 // ── ABIs ──────────────────────────────────────────────────────────────────────
 
@@ -28,8 +31,10 @@ const auctionAbi = parseAbi([
 const erc20Abi = parseAbi([
   "function approve(address spender, uint256 amount) returns (bool)",
   "function allowance(address owner, address spender) view returns (uint256)",
+  "function balanceOf(address owner) view returns (uint256)",
   "function decimals() view returns (uint8)",
   "function symbol() view returns (string)",
+  "function mint(address to, uint256 amount)",
 ]);
 
 // ── Status helpers ─────────────────────────────────────────────────────────────
@@ -61,8 +66,13 @@ interface AgentStatus {
   agentAddress?: string | null;
 }
 
+interface LeaderOverride {
+  leader: `0x${string}`;
+  amount: bigint;
+}
+
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
+const DEMO_TOKEN_ADDRESS = (process.env.NEXT_PUBLIC_TOKEN_ADDRESS ?? "").toLowerCase();
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -73,6 +83,7 @@ export default function AuctionDetail({
 }) {
   const { id: auctionAddress } = use(params);
   const addr = auctionAddress as `0x${string}`;
+  const serverUrl = getServerUrl();
 
   const { address: userAddress, isConnected } = useAccount();
   const [bidAmount, setBidAmount] = useState("");
@@ -82,6 +93,8 @@ export default function AuctionDetail({
   const [approvalDone, setApprovalDone] = useState(false);
   const [wonNotif, setWonNotif]   = useState(false);
   const [lostNotif, setLostNotif] = useState(false);
+  const [txError, setTxError] = useState<string | null>(null);
+  const [leaderOverride, setLeaderOverride] = useState<LeaderOverride | null>(null);
   const [agentReady, setAgentReady] = useState(false);
   const [agentAddress, setAgentAddress] = useState<string | null>(null);
   const [agentPolicy, setAgentPolicy] = useState<AgentPolicySnapshot | null>(null);
@@ -94,45 +107,68 @@ export default function AuctionDetail({
   const lastRecordedBidHashRef = useRef<`0x${string}` | undefined>(undefined);
   const lastApprovedHashRef = useRef<`0x${string}` | undefined>(undefined);
   const submittedBidAmountRef = useRef("");
+  const chainId = robinhoodTestnet.id;
 
   // ── Contract reads ────────────────────────────────────────────────────────
 
   const { data: state, refetch: refetchState } = useReadContract({
     address: addr,
     abi: auctionAbi,
+    chainId,
     functionName: "currentState",
   });
 
-  const { data: startTime } = useReadContract({ address: addr, abi: auctionAbi, functionName: "startTime" });
-  const { data: endTime }   = useReadContract({ address: addr, abi: auctionAbi, functionName: "endTime" });
-  const { data: highestBidder, refetch: refetchLeader } = useReadContract({ address: addr, abi: auctionAbi, functionName: "highestBidder" });
-  const { data: highestBid,    refetch: refetchBid }    = useReadContract({ address: addr, abi: auctionAbi, functionName: "highestBid" });
-  const { data: reservePrice }  = useReadContract({ address: addr, abi: auctionAbi, functionName: "reservePrice" });
-  const { data: minIncrement }  = useReadContract({ address: addr, abi: auctionAbi, functionName: "minIncrement" });
-  const { data: metadataURI }   = useReadContract({ address: addr, abi: auctionAbi, functionName: "metadataURI" });
-  const { data: imageURI }      = useReadContract({ address: addr, abi: auctionAbi, functionName: "imageURI" });
-  const { data: sellerAddr }    = useReadContract({ address: addr, abi: auctionAbi, functionName: "seller" });
-  const { data: currencyAddr }  = useReadContract({ address: addr, abi: auctionAbi, functionName: "currency" });
+  const { data: startTime } = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "startTime" });
+  const { data: endTime }   = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "endTime" });
+  const { data: highestBidder, refetch: refetchLeader } = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "highestBidder" });
+  const { data: highestBid,    refetch: refetchBid }    = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "highestBid" });
+  const { data: reservePrice, refetch: refetchReserve }  = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "reservePrice" });
+  const { data: minIncrement, refetch: refetchIncrement }  = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "minIncrement" });
+  const { data: metadataURI, refetch: refetchMetadata }   = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "metadataURI" });
+  const { data: imageURI, refetch: refetchImage }      = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "imageURI" });
+  const { data: sellerAddr, refetch: refetchSeller }    = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "seller" });
+  const { data: currencyAddr, refetch: refetchCurrency }  = useReadContract({ address: addr, abi: auctionAbi, chainId, functionName: "currency" });
 
   const tokenAddr = currencyAddr as `0x${string}` | undefined;
 
-  const { data: tokenSymbol }   = useReadContract({ address: tokenAddr, abi: erc20Abi, functionName: "symbol", query: { enabled: !!tokenAddr } });
-  const { data: tokenDecimals } = useReadContract({ address: tokenAddr, abi: erc20Abi, functionName: "decimals", query: { enabled: !!tokenAddr } });
+  const { data: tokenSymbol, refetch: refetchTokenSymbol }   = useReadContract({ address: tokenAddr, abi: erc20Abi, chainId, functionName: "symbol", query: { enabled: !!tokenAddr } });
+  const { data: tokenDecimals, refetch: refetchTokenDecimals } = useReadContract({ address: tokenAddr, abi: erc20Abi, chainId, functionName: "decimals", query: { enabled: !!tokenAddr } });
+  const { data: tokenBalance, refetch: refetchTokenBalance } = useReadContract({
+    address: tokenAddr,
+    abi: erc20Abi,
+    chainId,
+    functionName: "balanceOf",
+    args: userAddress && tokenAddr ? [userAddress] : undefined,
+    query: { enabled: !!tokenAddr && !!userAddress },
+  });
   const { data: allowance, refetch: refetchAllowance } = useReadContract({
     address: tokenAddr,
     abi: erc20Abi,
+    chainId,
     functionName: "allowance",
     args: userAddress && tokenAddr ? [userAddress, addr] : undefined,
     query: { enabled: !!tokenAddr && !!userAddress },
   });
+  const { data: blockNumber } = useBlockNumber({ chainId, watch: { pollingInterval: 5000 } });
 
   const decimals = tokenDecimals ? Number(tokenDecimals) : 18;
   const stateNum = state !== undefined ? Number(state) : -1;
+  const onChainHighestBidRaw = highestBid as bigint | undefined;
+  const onChainLeader = highestBidder as `0x${string}` | undefined;
+  const onChainHasLeader = !!onChainLeader && onChainLeader.toLowerCase() !== ZERO_ADDRESS && onChainHighestBidRaw !== undefined && onChainHighestBidRaw > 0n;
+  const effectiveHighestBidRaw =
+    onChainHasLeader && onChainHighestBidRaw !== undefined
+      ? onChainHighestBidRaw
+      : leaderOverride?.amount;
+  const effectiveHighestBidder =
+    onChainHasLeader && onChainLeader
+      ? onChainLeader
+      : leaderOverride?.leader;
 
   // Minimum valid bid: max(reservePrice, highestBid + minIncrement)
   const minBidRaw = (() => {
     const r = reservePrice as bigint | undefined;
-    const h = highestBid as bigint | undefined;
+    const h = effectiveHighestBidRaw;
     const m = minIncrement as bigint | undefined;
     if (!r) return undefined;
     const fromHighest = h && m ? h + m : 0n;
@@ -152,22 +188,80 @@ export default function AuctionDetail({
 
   // ── Writes ────────────────────────────────────────────────────────────────
 
-  const { writeContract: writeApprove, isPending: isApprovePending, data: approveHash } = useWriteContract();
-  const { writeContract: writeBid, isPending: isBidPending, data: bidHash } = useWriteContract();
-  const { isSuccess: approveConfirmed } = useWaitForTransactionReceipt({ hash: approveHash });
-  const { isSuccess: bidConfirmed } = useWaitForTransactionReceipt({ hash: bidHash });
+  const { writeContract: writeApprove, isPending: isApprovePending, data: approveHash, error: approveSubmitError } = useWriteContract();
+  const { writeContract: writeBid, isPending: isBidPending, data: bidHash, error: bidSubmitError } = useWriteContract();
+  const { writeContract: writeMint, isPending: isMintPending, data: mintHash, error: mintSubmitError } = useWriteContract();
+  const { isSuccess: approveConfirmed, error: approveReceiptError } = useWaitForTransactionReceipt({ hash: approveHash, chainId });
+  const { isSuccess: bidConfirmed, error: bidReceiptError } = useWaitForTransactionReceipt({ hash: bidHash, chainId });
+  const { isSuccess: mintConfirmed, error: mintReceiptError } = useWaitForTransactionReceipt({ hash: mintHash, chainId });
+
+  const parseBidAmount = () => {
+    if (!bidAmount) return null;
+    try {
+      return parseUnits(bidAmount, decimals);
+    } catch {
+      setTxError("Enter a valid bid amount.");
+      return null;
+    }
+  };
 
   const handleApprove = () => {
-    if (!tokenAddr || !bidAmount) return;
-    const amount = parseUnits(bidAmount, decimals);
-    writeApprove({ address: tokenAddr, abi: erc20Abi, functionName: "approve", args: [addr, amount], gas: 100_000n });
+    if (!tokenAddr) {
+      setTxError("Token details are still loading. Wait a moment and try again.");
+      return;
+    }
+    if (!bidAmount) return;
+    const amount = parseBidAmount();
+    if (amount === null) return;
+    if (minBidRaw !== undefined && amount < minBidRaw) {
+      setTxError(`Bid must be at least ${minBidFormatted} ${tokenSymbol as string ?? "tokens"}.`);
+      return;
+    }
+    if (tokenBalance !== undefined && amount > (tokenBalance as bigint)) {
+      setTxError(`Insufficient balance. You have ${formatUnits(tokenBalance as bigint, decimals)} ${tokenSymbol as string ?? "tokens"}. Mint more demo tokens first.`);
+      return;
+    }
+    setTxError(null);
+    writeApprove({ address: tokenAddr, abi: erc20Abi, chainId, functionName: "approve", args: [addr, amount], gas: 100_000n });
   };
 
   const handleBid = () => {
     if (!bidAmount) return;
+    const amount = parseBidAmount();
+    if (amount === null) return;
+    if (stateNum !== 2) {
+      setTxError("Auction is not active yet.");
+      return;
+    }
+    if (minBidRaw !== undefined && amount < minBidRaw) {
+      setTxError(`Bid must be at least ${minBidFormatted} ${tokenSymbol as string ?? "tokens"}.`);
+      return;
+    }
+    if (tokenBalance !== undefined && amount > (tokenBalance as bigint)) {
+      setTxError(`Insufficient balance. You have ${formatUnits(tokenBalance as bigint, decimals)} ${tokenSymbol as string ?? "tokens"}. Mint more demo tokens first.`);
+      return;
+    }
+    if (allowance !== undefined && amount > (allowance as bigint)) {
+      setTxError("Approve this bid amount first.");
+      setApprovalDone(false);
+      return;
+    }
+    setTxError(null);
     submittedBidAmountRef.current = bidAmount;
-    const amount = parseUnits(bidAmount, decimals);
-    writeBid({ address: addr, abi: auctionAbi, functionName: "bid", args: [amount], gas: 300_000n });
+    writeBid({ address: addr, abi: auctionAbi, chainId, functionName: "bid", args: [amount], gas: 300_000n });
+  };
+
+  const handleMintDemoTokens = () => {
+    if (!tokenAddr || !userAddress) return;
+    setTxError(null);
+    writeMint({
+      address: tokenAddr,
+      abi: erc20Abi,
+      chainId,
+      functionName: "mint",
+      args: [userAddress, parseUnits("10000", decimals)],
+      gas: 120_000n,
+    });
   };
 
   // Mark approval complete after the approval tx confirms
@@ -175,8 +269,15 @@ export default function AuctionDetail({
     if (!approveConfirmed || !approveHash || approveHash === lastApprovedHashRef.current) return;
     lastApprovedHashRef.current = approveHash;
     setApprovalDone(true);
+    setTxError(null);
     void refetchAllowance();
   }, [approveConfirmed, approveHash, refetchAllowance]);
+
+  useEffect(() => {
+    if (!mintConfirmed) return;
+    setTxError(null);
+    void refetchTokenBalance();
+  }, [mintConfirmed, refetchTokenBalance]);
 
   // Record a local bid only after the bid tx confirms on-chain
   useEffect(() => {
@@ -185,14 +286,80 @@ export default function AuctionDetail({
     lastRecordedBidHashRef.current = bidHash;
     recordBid(auctionAddress, userAddress, { amount: submittedBidAmount, txHash: bidHash, timestamp: Date.now() });
     setLocalBids(getBids(auctionAddress, userAddress));
+    if (userAddress) {
+      setLeaderOverride({
+        leader: userAddress as `0x${string}`,
+        amount: parseUnits(submittedBidAmount, decimals),
+      });
+    }
     submittedBidAmountRef.current = "";
-    setTimeout(() => {
-      void refetchState();
-      void refetchLeader();
-      void refetchBid();
-      void refetchAllowance();
-    }, 4000);
-  }, [bidConfirmed, bidHash, auctionAddress, userAddress, refetchAllowance, refetchBid, refetchLeader, refetchState]);
+    setTxError(null);
+    void refetchState();
+    void refetchLeader();
+    void refetchBid();
+    void refetchAllowance();
+    void refetchTokenBalance();
+  }, [bidConfirmed, bidHash, auctionAddress, decimals, userAddress, refetchAllowance, refetchBid, refetchLeader, refetchState, refetchTokenBalance]);
+
+  useEffect(() => {
+    if (!blockNumber) return;
+    void refetchState();
+    void refetchLeader();
+    void refetchBid();
+    if (reservePrice === undefined) void refetchReserve();
+    if (minIncrement === undefined) void refetchIncrement();
+    if (metadataURI === undefined) void refetchMetadata();
+    if (imageURI === undefined) void refetchImage();
+    if (sellerAddr === undefined) void refetchSeller();
+    if (currencyAddr === undefined) void refetchCurrency();
+    if (tokenAddr && tokenSymbol === undefined) void refetchTokenSymbol();
+    if (tokenAddr && tokenDecimals === undefined) void refetchTokenDecimals();
+    if (tokenAddr && userAddress) void refetchTokenBalance();
+  }, [
+    blockNumber,
+    currencyAddr,
+    imageURI,
+    metadataURI,
+    minIncrement,
+    refetchBid,
+    refetchCurrency,
+    refetchImage,
+    refetchIncrement,
+    refetchLeader,
+    refetchMetadata,
+    refetchReserve,
+    refetchSeller,
+    refetchState,
+    refetchTokenBalance,
+    refetchTokenDecimals,
+    refetchTokenSymbol,
+    reservePrice,
+    sellerAddr,
+    tokenAddr,
+    tokenDecimals,
+    tokenSymbol,
+    userAddress,
+  ]);
+
+  useEffect(() => {
+    if (!onChainHasLeader) return;
+    setLeaderOverride((current) => {
+      if (!current) return current;
+      if (current.leader.toLowerCase() === onChainLeader?.toLowerCase() && current.amount === onChainHighestBidRaw) {
+        return null;
+      }
+      if (onChainHighestBidRaw !== undefined && onChainHighestBidRaw >= current.amount) {
+        return null;
+      }
+      return current;
+    });
+  }, [onChainHasLeader, onChainLeader, onChainHighestBidRaw]);
+
+  useEffect(() => {
+    const err = bidReceiptError ?? bidSubmitError ?? approveReceiptError ?? approveSubmitError ?? mintReceiptError ?? mintSubmitError;
+    if (!err) return;
+    setTxError(normalizeWalletError(err));
+  }, [approveReceiptError, approveSubmitError, bidReceiptError, bidSubmitError, mintReceiptError, mintSubmitError]);
 
   // ── Socket ────────────────────────────────────────────────────────────────
 
@@ -202,8 +369,8 @@ export default function AuctionDetail({
     const loadAgentState = async () => {
       try {
         const [statusRes, policiesRes] = await Promise.all([
-          fetch(`${WS_URL}/agent/status`),
-          fetch(`${WS_URL}/agent`),
+          fetch(`${serverUrl}/agent/status`),
+          fetch(`${serverUrl}/agent`),
         ]);
 
         const status = await statusRes.json() as AgentStatus;
@@ -230,7 +397,7 @@ export default function AuctionDetail({
     return () => {
       cancelled = true;
     };
-  }, [auctionAddress, decimals]);
+  }, [auctionAddress, decimals, serverUrl]);
 
   useEffect(() => {
     recordView(auctionAddress);
@@ -249,6 +416,12 @@ export default function AuctionDetail({
       if (e.auctionAddress.toLowerCase() !== auctionAddress.toLowerCase()) return;
       const short = `${e.leader.slice(0, 6)}…${e.leader.slice(-4)}`;
       addEvent(`${short} is now leading`);
+      if (e.leader && e.amount) {
+        setLeaderOverride({
+          leader: e.leader as `0x${string}`,
+          amount: BigInt(e.amount),
+        });
+      }
       refetchLeader();
       refetchBid();
     });
@@ -306,7 +479,7 @@ export default function AuctionDetail({
       clearInterval(id);
       if (pollId) clearInterval(pollId);
     };
-  }, [state, startTime, endTime]);
+  }, [endTime, refetchState, startTime, state]);
 
   // Show winner/loser notification when auction ends (live transition OR page load after ended)
   useEffect(() => {
@@ -318,6 +491,10 @@ export default function AuctionDetail({
       const winner = (highestBidder as string)?.toLowerCase();
       const noWinner = !winner || winner === "0x0000000000000000000000000000000000000000";
       if (userAddress && !noWinner && winner === userAddress.toLowerCase()) {
+        recordWin(auctionAddress, userAddress, {
+          amount: effectiveHighestBidRaw?.toString() ?? "0",
+          timestamp: Date.now(),
+        });
         setWonNotif(true);
       } else if (userAddress && localBids.length > 0) {
         // User bid but either didn't win or bid didn't confirm — show notification regardless
@@ -326,7 +503,7 @@ export default function AuctionDetail({
       }
     }
     if (sn !== -1) prevStateRef.current = sn;
-  }, [stateNum, highestBidder, userAddress, localBids.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [auctionAddress, effectiveHighestBidRaw, stateNum, highestBidder, userAddress, localBids.length]);
 
   function addEvent(text: string) {
     setLiveEvents((prev) => [{ type: "info", text, ts: Date.now() }, ...prev].slice(0, 20));
@@ -335,14 +512,15 @@ export default function AuctionDetail({
   // ── Derived values ────────────────────────────────────────────────────────
 
   const chip = STATE_CHIP[stateNum] ?? { label: "…", color: "bg-zinc-800 text-zinc-400" };
-  const highestBidRaw = highestBid as bigint | undefined;
-  const hasLeader = !!highestBidder && (highestBidder as string).toLowerCase() !== ZERO_ADDRESS && highestBidRaw !== undefined && highestBidRaw > 0n;
-  const formattedHighest = hasLeader && highestBidRaw !== undefined ? formatUnits(highestBidRaw, decimals) : "—";
+  const hasLeader = !!effectiveHighestBidder && effectiveHighestBidder.toLowerCase() !== ZERO_ADDRESS && effectiveHighestBidRaw !== undefined && effectiveHighestBidRaw > 0n;
+  const formattedHighest = hasLeader && effectiveHighestBidRaw !== undefined ? formatUnits(effectiveHighestBidRaw, decimals) : "—";
+  const formattedBalance = tokenBalance !== undefined ? formatUnits(tokenBalance as bigint, decimals) : "—";
+  const canMintDemoToken = !!tokenAddr && tokenAddr.toLowerCase() === DEMO_TOKEN_ADDRESS;
   const needsApproval = allowance !== undefined && bidAmount
     ? (allowance as bigint) < parseUnits(bidAmount || "0", decimals)
     : true;
   const isActive = stateNum === 2;
-  const isPending = isApprovePending || isBidPending;
+  const isPending = isApprovePending || isBidPending || isMintPending;
   const isAgentEnabled = !!agentPolicy;
 
   const fmtTime = (secs: number) =>
@@ -364,7 +542,7 @@ export default function AuctionDetail({
         cooldownMs: Math.max(1, Number(agentCooldown || "5")) * 1000,
       };
 
-      const res = await fetch(`${WS_URL}/agent/watch`, {
+      const res = await fetch(`${serverUrl}/agent/watch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -392,7 +570,7 @@ export default function AuctionDetail({
     setAgentBusy(true);
     setAgentError(null);
     try {
-      const res = await fetch(`${WS_URL}/agent/watch/${auctionAddress}`, { method: "DELETE" });
+      const res = await fetch(`${serverUrl}/agent/watch/${auctionAddress}`, { method: "DELETE" });
       if (!res.ok) throw new Error("failed to disable auto-bid");
       setAgentPolicy(null);
       addEvent("Auto-bid agent disabled");
@@ -428,7 +606,7 @@ export default function AuctionDetail({
             <button onClick={() => setWonNotif(false)} className="text-green-400/40 hover:text-green-400 text-xl self-start leading-none">×</button>
           </div>
           <Link
-            href="/dashboard"
+            href="/dashboard?tab=won"
             className="flex items-center justify-center gap-2 py-3 font-bold text-sm text-black"
             style={{ background: "linear-gradient(90deg, #4ade80, #22d3ee)" }}
           >
@@ -484,7 +662,7 @@ export default function AuctionDetail({
         <div className="flex justify-between items-center p-4 bg-white/5 rounded-xl">
           <div>
             <p className="text-white/40 text-xs mb-1">Current Leader</p>
-            <p className="font-mono text-sm">{hasLeader ? short(highestBidder as string) : "No bids yet"}</p>
+            <p className="font-mono text-sm">{hasLeader ? short(effectiveHighestBidder as string) : "No bids yet"}</p>
           </div>
           <div className="text-right">
             <p className="text-white/40 text-xs mb-1">Highest Bid</p>
@@ -498,6 +676,13 @@ export default function AuctionDetail({
           <span>Min increment: {minIncrement ? formatUnits(minIncrement as bigint, decimals) : "—"}</span>
         </div>
 
+        {isConnected && (
+          <div className="flex justify-between text-sm text-white/40">
+            <span>Balance: {formattedBalance} {tokenSymbol as string ?? ""}</span>
+            <span>Allowance: {allowance !== undefined ? formatUnits(allowance as bigint, decimals) : "—"}</span>
+          </div>
+        )}
+
         {/* Ended / Settled result */}
         {(stateNum === 3 || stateNum === 4) && (
           <div className={`p-4 rounded-xl border ${stateNum === 4 ? "bg-blue-950/40 border-blue-800/40" : "bg-green-950/40 border-green-800/40"}`}>
@@ -505,8 +690,8 @@ export default function AuctionDetail({
             {hasLeader ? (
               <>
                 <p className="font-semibold text-sm">
-                  Winner: <span className="font-mono">{short(highestBidder as string)}</span>
-                  {userAddress && (highestBidder as string).toLowerCase() === userAddress.toLowerCase() && (
+                  Winner: <span className="font-mono">{short(effectiveHighestBidder as string)}</span>
+                  {userAddress && (effectiveHighestBidder as string).toLowerCase() === userAddress.toLowerCase() && (
                     <span className="ml-2 text-green-400 font-bold">← You won! 🎉</span>
                   )}
                 </p>
@@ -547,14 +732,28 @@ export default function AuctionDetail({
                   )}
                 </div>
 
+                {txError && (
+                  <p className="text-sm text-red-300">{txError}</p>
+                )}
+
+                {isConnected && canMintDemoToken && (
+                  <button
+                    onClick={handleMintDemoTokens}
+                    disabled={isPending || !userAddress || !tokenAddr}
+                    className="w-full border border-cyan-300/40 text-cyan-200 font-semibold py-3 rounded-xl disabled:opacity-40 hover:bg-cyan-300/10 transition-colors"
+                  >
+                    {isMintPending ? "Minting demo tokens…" : `Mint 10,000 ${(tokenSymbol as string) ?? "ATKN"}`}
+                  </button>
+                )}
+
                 {/* Approve → Bid two-step */}
                 {!approvalDone && needsApproval ? (
                   <button
                     onClick={handleApprove}
-                    disabled={isPending || !bidAmount}
+                    disabled={isPending || !bidAmount || !tokenAddr}
                     className="w-full bg-white/20 text-white font-semibold py-3 rounded-xl disabled:opacity-40 hover:bg-white/30 transition-colors"
                   >
-                    {isApprovePending ? "Approving…" : "1. Approve"}
+                    {isApprovePending ? "Approving…" : !tokenAddr ? "Loading token…" : "1. Approve"}
                   </button>
                 ) : (
                   <button
@@ -674,7 +873,7 @@ export default function AuctionDetail({
                 <div key={b.txHash} className="flex justify-between text-sm p-3 bg-white/5 rounded-lg">
                   <span className="text-white/70">{b.amount} {tokenSymbol as string ?? "tokens"}</span>
                   <a
-                    href={`https://testnet.explorer.robinhoodchain.com/tx/${b.txHash}`}
+                    href={`https://explorer.testnet.chain.robinhood.com/tx/${b.txHash}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-mono text-xs text-white/30 hover:text-white/70"

@@ -9,15 +9,22 @@ import { createConfig } from "wagmi";
 import { arbitrumSepolia } from "wagmi/chains";
 import { defineChain, http } from "viem";
 
+const DEFAULT_ROBINHOOD_RPC = "https://rpc.testnet.chain.robinhood.com";
+export const ROBINHOOD_RPC_URL =
+  process.env.NEXT_PUBLIC_ROBINHOOD_RPC ||
+  process.env.NEXT_PUBLIC_ALCHEMY_ROBINHOOD_RPC ||
+  DEFAULT_ROBINHOOD_RPC;
+const ROBINHOOD_PROXY_RPC_URL = "/api/rpc/robinhood";
+
 export const robinhoodTestnet = defineChain({
   id: 46630,
   name: "Robinhood Chain Testnet",
   nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
   rpcUrls: {
-    default: { http: ["https://rpc.testnet.chain.robinhood.com"] },
+    default: { http: [ROBINHOOD_RPC_URL] },
   },
   blockExplorers: {
-    default: { name: "Explorer", url: "https://testnet.explorer.robinhoodchain.com" },
+    default: { name: "Explorer", url: "https://explorer.testnet.chain.robinhood.com" },
   },
   testnet: true,
 });
@@ -41,7 +48,7 @@ export const wagmiConfig = createConfig({
   connectors,
   chains: [robinhoodTestnet, arbitrumSepolia],
   transports: {
-    [robinhoodTestnet.id]: http("https://rpc.testnet.chain.robinhood.com"),
+    [robinhoodTestnet.id]: http(ROBINHOOD_PROXY_RPC_URL),
     [arbitrumSepolia.id]:  http(),
   },
   ssr: false,

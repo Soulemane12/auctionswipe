@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, useSimulateContract } from "wagmi";
+import { useEffect, useEffectEvent, useState } from "react";
+import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseAbi, parseUnits } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Link from "next/link";
+import { robinhoodTestnet, ROBINHOOD_RPC_URL } from "@/lib/wagmi";
+import { normalizeWalletError } from "@/lib/walletError";
 
 const ADMIN_ADDRESS   = (process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "").toLowerCase();
 const FACTORY_ADDRESS = (process.env.NEXT_PUBLIC_FACTORY_ADDRESS_ROBINHOOD ?? "") as `0x${string}`;
@@ -43,29 +45,125 @@ interface SellerRow {
   block_time:    string;
 }
 
+interface ListingPreset {
+  id: string;
+  title: string;
+  imageUrl: string;
+  reserve: string;
+  increment: string;
+  duration: string;
+  category: string;
+  priceTag: string;
+}
+
 const FONT   = "system-ui,-apple-system,sans-serif";
 const BORDER = "1px solid #2f3336";
+const CHAIN_ID = robinhoodTestnet.id;
+const DEFAULT_ROBINHOOD_RPC = "https://rpc.testnet.chain.robinhood.com";
+const DEFAULT_RESERVE = "10000";
+const DEFAULT_INCREMENT = "1000";
+const DEFAULT_DURATION = "180";
+const DEMO_LISTINGS: ListingPreset[] = [
+  {
+    id: "iphone-16-pro",
+    title: "iPhone 16 Pro Max · Desert Titanium",
+    imageUrl: "https://images.unsplash.com/photo-1695048133142-1a20484d2569?auto=format&fit=crop&w=1200&q=80",
+    reserve: "12000",
+    increment: "1000",
+    duration: "180",
+    category: "Tech",
+    priceTag: "hot drop",
+  },
+  {
+    id: "macbook-air",
+    title: "MacBook Air 15-inch · Midnight",
+    imageUrl: "https://images.unsplash.com/photo-1517336714739-489689fd1ca8?auto=format&fit=crop&w=1200&q=80",
+    reserve: "18000",
+    increment: "1500",
+    duration: "240",
+    category: "Laptop",
+    priceTag: "creator pick",
+  },
+  {
+    id: "sony-headphones",
+    title: "Sony WH-1000XM5 Noise Cancelling Headphones",
+    imageUrl: "https://images.unsplash.com/photo-1546435770-a3e426bf472b?auto=format&fit=crop&w=1200&q=80",
+    reserve: "7000",
+    increment: "500",
+    duration: "180",
+    category: "Audio",
+    priceTag: "best seller",
+  },
+  {
+    id: "playstation-5",
+    title: "PlayStation 5 Slim Bundle",
+    imageUrl: "https://images.unsplash.com/photo-1606144042614-b2417e99c4e3?auto=format&fit=crop&w=1200&q=80",
+    reserve: "11000",
+    increment: "1000",
+    duration: "240",
+    category: "Gaming",
+    priceTag: "live demand",
+  },
+  {
+    id: "nike-dunks",
+    title: "Nike Dunk Low Panda",
+    imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=1200&q=80",
+    reserve: "6500",
+    increment: "500",
+    duration: "180",
+    category: "Sneakers",
+    priceTag: "streetwear",
+  },
+  {
+    id: "dyson-airwrap",
+    title: "Dyson Airwrap Multi-Styler",
+    imageUrl: "https://images.unsplash.com/photo-1526947425960-945c6e72858f?auto=format&fit=crop&w=1200&q=80",
+    reserve: "9500",
+    increment: "750",
+    duration: "180",
+    category: "Beauty",
+    priceTag: "premium",
+  },
+  {
+    id: "leica-camera",
+    title: "Leica Q3 Compact Camera",
+    imageUrl: "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=1200&q=80",
+    reserve: "22000",
+    increment: "2000",
+    duration: "300",
+    category: "Camera",
+    priceTag: "rare gear",
+  },
+  {
+    id: "gaming-chair",
+    title: "Racing Style Gaming Chair",
+    imageUrl: "https://images.unsplash.com/photo-1587614382346-4ec70e388b28?auto=format&fit=crop&w=1200&q=80",
+    reserve: "8000",
+    increment: "750",
+    duration: "180",
+    category: "Setup",
+    priceTag: "desk flex",
+  },
+];
 
 export default function AdminPage() {
   const { address, isConnected } = useAccount();
+  const [hydrated, setHydrated] = useState(false);
   const isAdmin = isConnected && address?.toLowerCase() === ADMIN_ADDRESS;
 
   const { data: nextId, refetch: refetchNextId } = useReadContract({
-    address: FACTORY_ADDRESS, abi: factoryAbi, functionName: "nextId",
+    address: FACTORY_ADDRESS, abi: factoryAbi, chainId: CHAIN_ID, functionName: "nextId",
     query: { enabled: !!FACTORY_ADDRESS },
   });
 
   const { data: onChainAddresses, refetch: refetchAuctions } = useReadContract({
-    address: FACTORY_ADDRESS, abi: factoryAbi, functionName: "getAuctions",
+    address: FACTORY_ADDRESS, abi: factoryAbi, chainId: CHAIN_ID, functionName: "getAuctions",
     args: [0n, nextId ?? 0n],
     query: { enabled: !!FACTORY_ADDRESS && !!nextId && nextId > 0n },
   });
 
   const allAuctions = ((onChainAddresses as `0x${string}`[] | undefined) ?? []).slice().reverse();
-  const [hidden, setHidden] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try { return new Set(JSON.parse(localStorage.getItem("admin_hidden_auctions") ?? "[]")); } catch { return new Set(); }
-  });
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
   const hideAuction = (addr: string) => setHidden(prev => {
     const next = new Set(prev); next.add(addr.toLowerCase());
     localStorage.setItem("admin_hidden_auctions", JSON.stringify([...next]));
@@ -76,6 +174,15 @@ export default function AdminPage() {
   const [sellerRows, setSellerRows]   = useState<SellerRow[]>([]);
   const [duneLoading, setDuneLoading] = useState(false);
   const [duneFallback, setDuneFallback] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+    try {
+      setHidden(new Set(JSON.parse(localStorage.getItem("admin_hidden_auctions") ?? "[]")));
+    } catch {
+      setHidden(new Set());
+    }
+  }, []);
 
   useEffect(() => {
     if (!address) return;
@@ -91,6 +198,25 @@ export default function AdminPage() {
   const totalFees    = sellerRows.reduce((s, r) => s + (r.fee_tokens ?? 0), 0);
 
   const refetchAll = () => { refetchNextId(); setTimeout(refetchAuctions, 500); };
+
+  if (!hydrated) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT }}>
+        <div style={{ maxWidth: 600, margin: "0 auto", borderLeft: BORDER, borderRight: BORDER, minHeight: "100vh" }}>
+          <div style={{
+            position: "sticky", top: 0, zIndex: 10,
+            background: "rgba(0,0,0,0.85)", backdropFilter: "blur(20px)",
+            borderBottom: BORDER, padding: "12px 16px",
+          }}>
+            <h1 style={{ fontSize: 18, fontWeight: 800, margin: 0, lineHeight: 1.2 }}>Admin</h1>
+          </div>
+          <div style={{ padding: "28px 16px", color: "#536471", fontSize: 14 }}>
+            Loading admin…
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!isConnected) {
     return (
@@ -264,19 +390,70 @@ function AnalyticsCard({ label, value, sub, icon, accent }: { label: string; val
 function CreateListingBox({ onCreated, adminAddress, factoryNextId }: { onCreated: () => void; adminAddress: string; factoryNextId: bigint | undefined }) {
   const [title, setTitle]         = useState("");
   const [imageUrl, setImageUrl]   = useState("");
-  const [reserve, setReserve]     = useState("10000");
-  const [increment, setIncrement] = useState("1000");
-  const [duration, setDuration]   = useState("180");
+  const [reserve, setReserve]     = useState(DEFAULT_RESERVE);
+  const [increment, setIncrement] = useState(DEFAULT_INCREMENT);
+  const [duration, setDuration]   = useState(DEFAULT_DURATION);
   const [showAdv, setShowAdv]     = useState(false);
-  const [newAuctionAddr, setNewAuctionAddr] = useState<`0x${string}` | null>(null);
+  const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([]);
+  const [queuedPresetIds, setQueuedPresetIds] = useState<string[]>([]);
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
 
   const { writeContract: writeCreate, data: createTxHash, isPending: isCreating, reset } = useWriteContract();
   const { writeContract: writeActivate, isPending: isActivating } = useWriteContract();
-  const { isSuccess: createConfirmed, isLoading: isConfirming } = useWaitForTransactionReceipt({ hash: createTxHash });
+  const { isSuccess: createConfirmed, isLoading: isConfirming } = useWaitForTransactionReceipt({ hash: createTxHash, chainId: CHAIN_ID });
+
+  const presetById = Object.fromEntries(DEMO_LISTINGS.map((preset) => [preset.id, preset])) as Record<string, ListingPreset>;
+  const selectedPresets = selectedPresetIds.map((id) => presetById[id]).filter(Boolean);
+  const queuedPresets = queuedPresetIds.map((id) => presetById[id]).filter(Boolean);
+
+  function clearComposer() {
+    setTitle("");
+    setImageUrl("");
+    setReserve(DEFAULT_RESERVE);
+    setIncrement(DEFAULT_INCREMENT);
+    setDuration(DEFAULT_DURATION);
+    setActivePresetId(null);
+  }
+
+  function loadPreset(preset: ListingPreset) {
+    setTitle(preset.title);
+    setImageUrl(preset.imageUrl);
+    setReserve(preset.reserve);
+    setIncrement(preset.increment);
+    setDuration(preset.duration);
+    setActivePresetId(preset.id);
+    setShowAdv(true);
+  }
+
+  function togglePreset(id: string) {
+    setSelectedPresetIds((prev) => prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]);
+  }
+
+  function queueSelectedPresets() {
+    if (selectedPresets.length === 0) return;
+    setQueuedPresetIds((prev) => {
+      const seen = new Set(prev);
+      const next = [...prev];
+      for (const preset of selectedPresets) {
+        if (!seen.has(preset.id)) {
+          next.push(preset.id);
+          seen.add(preset.id);
+        }
+      }
+      return next;
+    });
+
+    if (!title.trim()) loadPreset(selectedPresets[0]);
+  }
+
+  function loadFirstSelectedPreset() {
+    if (selectedPresets.length === 0) return;
+    loadPreset(selectedPresets[0]);
+  }
 
   // After create confirmed, fetch the new auction address then activate it
   const { data: newAddrs, refetch: fetchNewAddr } = useReadContract({
-    address: FACTORY_ADDRESS, abi: factoryAbi, functionName: "getAuctions",
+    address: FACTORY_ADDRESS, abi: factoryAbi, chainId: CHAIN_ID, functionName: "getAuctions",
     args: [factoryNextId ?? 0n, (factoryNextId ?? 0n) + 1n],
     query: { enabled: false },
   });
@@ -289,17 +466,25 @@ function CreateListingBox({ onCreated, adminAddress, factoryNextId }: { onCreate
     const addrs = newAddrs as `0x${string}`[] | undefined;
     if (!addrs || addrs.length === 0) return;
     const addr = addrs[0];
-    setNewAuctionAddr(addr);
-    writeActivate({ address: addr, abi: auctionAbi, functionName: "activate", args: [], gas: 300_000n });
-    setTitle(""); setImageUrl(""); setReserve("10000"); setIncrement("1000"); setDuration("180");
+    writeActivate({ address: addr, abi: auctionAbi, chainId: CHAIN_ID, functionName: "activate", args: [], gas: 300_000n });
+
+    const remainingQueue = activePresetId ? queuedPresetIds.filter((id) => id !== activePresetId) : queuedPresetIds;
+    setQueuedPresetIds(remainingQueue);
+
+    if (remainingQueue.length > 0) {
+      const nextPreset = presetById[remainingQueue[0]];
+      if (nextPreset) loadPreset(nextPreset);
+      else clearComposer();
+    } else {
+      clearComposer();
+    }
+
     reset(); onCreated();
   }, [newAddrs]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const isPending = isCreating;
   const handleCreate = () => {
     if (!title.trim()) return;
     writeCreate({
-      address: FACTORY_ADDRESS, abi: factoryAbi, functionName: "createAuction",
+      address: FACTORY_ADDRESS, abi: factoryAbi, chainId: CHAIN_ID, functionName: "createAuction",
       args: [
         TOKEN_ADDRESS,
         parseUnits(reserve || "0", 18),
@@ -330,6 +515,166 @@ function CreateListingBox({ onCreated, adminAddress, factoryNextId }: { onCreate
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+              <div>
+                <p style={{ color: "#fff", fontSize: 14, fontWeight: 800, margin: 0 }}>Demo Inventory</p>
+                <p style={{ color: "#536471", fontSize: 12, margin: "2px 0 0" }}>
+                  Tap real-looking products to load them fast, or multi-select and queue a whole batch.
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <button
+                  onClick={() => setSelectedPresetIds(DEMO_LISTINGS.map((preset) => preset.id))}
+                  style={{ background: "none", border: "none", color: "#1d9bf0", fontSize: 12, cursor: "pointer", padding: 0 }}
+                >
+                  Select all
+                </button>
+                <button
+                  onClick={() => setSelectedPresetIds([])}
+                  style={{ background: "none", border: "none", color: "#536471", fontSize: 12, cursor: "pointer", padding: 0 }}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 4, marginBottom: 10 }}>
+              {DEMO_LISTINGS.map((preset) => {
+                const selected = selectedPresetIds.includes(preset.id);
+                const active = activePresetId === preset.id;
+                return (
+                  <div
+                    key={preset.id}
+                    onClick={() => loadPreset(preset)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        loadPreset(preset);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    style={{
+                      minWidth: 190,
+                      background: active ? "rgba(29,155,240,0.12)" : "#0d0d0d",
+                      border: active || selected ? "1px solid rgba(29,155,240,0.5)" : BORDER,
+                      borderRadius: 18,
+                      padding: 0,
+                      textAlign: "left",
+                      cursor: "pointer",
+                      overflow: "hidden",
+                      position: "relative",
+                      boxShadow: active ? "0 0 0 1px rgba(29,155,240,0.25)" : "none",
+                    }}
+                  >
+                    <div style={{ position: "absolute", top: 10, right: 10, zIndex: 1 }}>
+                      <button
+                        type="button"
+                        onClick={(event) => { event.stopPropagation(); togglePreset(preset.id); }}
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: "50%",
+                          border: selected ? "none" : "1px solid rgba(255,255,255,0.25)",
+                          background: selected ? "#1d9bf0" : "rgba(0,0,0,0.45)",
+                          color: "#fff",
+                          fontSize: 14,
+                          fontWeight: 800,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {selected ? "✓" : "+"}
+                      </button>
+                    </div>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={preset.imageUrl} alt={preset.title} style={{ width: "100%", height: 132, objectFit: "cover", display: "block" }} />
+                    <div style={{ padding: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                        <span style={{ color: "#1d9bf0", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.7px" }}>{preset.category}</span>
+                        <span style={{ color: "#00e676", fontSize: 10, fontWeight: 700 }}>{preset.priceTag}</span>
+                      </div>
+                      <p style={{ color: "#fff", fontSize: 13, fontWeight: 700, lineHeight: 1.35, margin: "0 0 8px" }}>
+                        {preset.title}
+                      </p>
+                      <p style={{ color: "#536471", fontSize: 11, margin: 0 }}>
+                        Reserve {preset.reserve} · raise {preset.increment}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <p style={{ color: "#536471", fontSize: 12, margin: 0 }}>
+                {selectedPresets.length === 0 ? "No demo products selected" : `${selectedPresets.length} product${selectedPresets.length === 1 ? "" : "s"} selected`}
+              </p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={loadFirstSelectedPreset}
+                  disabled={selectedPresets.length === 0}
+                  style={{
+                    background: "transparent", border: BORDER, color: "#fff", fontSize: 12, fontWeight: 700,
+                    borderRadius: 999, padding: "7px 12px", cursor: selectedPresets.length === 0 ? "not-allowed" : "pointer",
+                    opacity: selectedPresets.length === 0 ? 0.45 : 1,
+                  }}
+                >
+                  Load selected
+                </button>
+                <button
+                  type="button"
+                  onClick={queueSelectedPresets}
+                  disabled={selectedPresets.length === 0}
+                  style={{
+                    background: "#1d9bf0", border: "none", color: "#fff", fontSize: 12, fontWeight: 800,
+                    borderRadius: 999, padding: "8px 14px", cursor: selectedPresets.length === 0 ? "not-allowed" : "pointer",
+                    opacity: selectedPresets.length === 0 ? 0.45 : 1,
+                  }}
+                >
+                  Queue selected
+                </button>
+              </div>
+            </div>
+
+            {queuedPresets.length > 0 && (
+              <div style={{ marginTop: 12, padding: 12, borderRadius: 16, background: "#0d0d0d", border: BORDER }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+                  <p style={{ color: "#fff", fontSize: 13, fontWeight: 800, margin: 0 }}>Queued Listings · {queuedPresets.length}</p>
+                  <button
+                    type="button"
+                    onClick={() => setQueuedPresetIds([])}
+                    style={{ background: "none", border: "none", color: "#536471", fontSize: 12, cursor: "pointer", padding: 0 }}
+                  >
+                    Clear queue
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {queuedPresets.map((preset) => (
+                    <div key={preset.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#111", border: BORDER, borderRadius: 999, padding: "6px 10px" }}>
+                      <span style={{ color: preset.id === activePresetId ? "#1d9bf0" : "#fff", fontSize: 12, fontWeight: 700 }}>{preset.title}</span>
+                      <button
+                        type="button"
+                        onClick={() => loadPreset(preset)}
+                        style={{ background: "none", border: "none", color: "#1d9bf0", fontSize: 11, cursor: "pointer", padding: 0 }}
+                      >
+                        Load
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setQueuedPresetIds((prev) => prev.filter((id) => id !== preset.id))}
+                        style={{ background: "none", border: "none", color: "#536471", fontSize: 11, cursor: "pointer", padding: 0 }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Title textarea */}
           <textarea
             placeholder="What are you listing?"
@@ -339,7 +684,6 @@ function CreateListingBox({ onCreated, adminAddress, factoryNextId }: { onCreate
             style={{
               width: "100%", background: "transparent", border: "none", outline: "none",
               fontSize: 20, color: "#fff", resize: "none", fontFamily: FONT,
-              placeholder: "#536471",
             }}
           />
 
@@ -413,7 +757,7 @@ function CreateListingBox({ onCreated, adminAddress, factoryNextId }: { onCreate
                 transition: "opacity 0.15s, background 0.15s",
               }}
             >
-              {isCreating ? "Confirm in wallet…" : isConfirming ? "Creating…" : isActivating ? "Activating…" : "Post & Activate"}
+              {isCreating ? "Confirm in wallet…" : isConfirming ? "Creating…" : isActivating ? "Activating…" : queuedPresets.length > 0 ? `Post & Activate · ${queuedPresets.length} queued` : "Post & Activate"}
             </button>
           </div>
         </div>
@@ -425,25 +769,27 @@ function CreateListingBox({ onCreated, adminAddress, factoryNextId }: { onCreate
 // ── Auction Row ───────────────────────────────────────────────────────────────
 
 function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: string) => void }) {
-  const { writeContract, isPending, data: txHash } = useWriteContract();
+  const { writeContract, isPending, data: txHash, error: writeError } = useWriteContract();
   const [countdown, setCountdown]    = useState<number | null>(null);
-  const [waitingForChain, setWaitingForChain] = useState(false);
-  const [waitingSecs, setWaitingSecs] = useState(0);
-  const waitingStartRef = useRef<number | null>(null);
+  const [txError, setTxError] = useState<string | null>(null);
+  const canRepairRpc = ROBINHOOD_RPC_URL !== DEFAULT_ROBINHOOD_RPC;
 
-  const { data: state, refetch: refetchState } = useReadContract({ address, abi: auctionAbi, functionName: "currentState" });
-  const { data: startTime }    = useReadContract({ address, abi: auctionAbi, functionName: "startTime" });
-  const { data: endTime }      = useReadContract({ address, abi: auctionAbi, functionName: "endTime" });
-  const { data: highestBid }   = useReadContract({ address, abi: auctionAbi, functionName: "highestBid" });
-  const { data: highestBidder} = useReadContract({ address, abi: auctionAbi, functionName: "highestBidder" });
-  const { data: title }        = useReadContract({ address, abi: auctionAbi, functionName: "metadataURI" });
-  const { data: imageURI }     = useReadContract({ address, abi: auctionAbi, functionName: "imageURI" });
+  const { data: state, refetch: refetchState } = useReadContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: "currentState" });
+  const { data: startTime }    = useReadContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: "startTime" });
+  const { data: endTime }      = useReadContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: "endTime" });
+  const { data: highestBid }   = useReadContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: "highestBid" });
+  const { data: highestBidder} = useReadContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: "highestBidder" });
+  const { data: title }        = useReadContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: "metadataURI" });
+  const { data: imageURI }     = useReadContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: "imageURI" });
 
   const stateNum = state !== undefined ? Number(state) : -1;
   const stateColor = STATE_COLORS[stateNum] ?? "#71767b";
   const stateBg    = STATE_BG[stateNum] ?? "#71767b15";
   const highestBidRaw = highestBid as bigint | undefined;
   const hasLiveBid = !!highestBidder && (highestBidder as string).toLowerCase() !== ZERO_ADDRESS && highestBidRaw !== undefined && highestBidRaw > 0n;
+  const refreshState = useEffectEvent(() => {
+    void refetchState();
+  });
 
   useEffect(() => {
     const target = stateNum === 1 ? startTime : stateNum === 2 ? endTime : null;
@@ -455,11 +801,8 @@ function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: s
       setCountdown(Math.max(0, secs));
       if (secs <= 0 && !pollInterval) {
         // Timer expired — poll on-chain every 2s until currentState() returns ENDED
-        setWaitingForChain(true);
-        waitingStartRef.current = Date.now();
         pollInterval = setInterval(() => {
-          refetchState();
-          setWaitingSecs(Math.floor((Date.now() - (waitingStartRef.current ?? Date.now())) / 1000));
+          refreshState();
         }, 2000);
       }
     };
@@ -472,25 +815,41 @@ function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: s
   }, [stateNum, startTime, endTime]);
 
   // Refetch state as soon as the tx is confirmed on-chain (no blind timeout)
-  const { isSuccess: txConfirmed } = useWaitForTransactionReceipt({ hash: txHash });
+  const { isSuccess: txConfirmed, error: txReceiptError } = useWaitForTransactionReceipt({ hash: txHash, chainId: CHAIN_ID });
   useEffect(() => {
-    if (txConfirmed) refetchState();
-  }, [txConfirmed]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (txConfirmed) {
+      setTxError(null);
+      refreshState();
+    }
+  }, [txConfirmed]);
 
-  // Stop the "waiting for chain" indicator once on-chain state flips to ENDED or SETTLED
   useEffect(() => {
-    if (stateNum === 3 || stateNum === 4) setWaitingForChain(false);
-  }, [stateNum]);
+    const err = txReceiptError ?? writeError;
+    if (!err) return;
+    setTxError(normalizeWalletError(err));
+  }, [txReceiptError, writeError]);
 
-  const { data: settleSimOk } = useSimulateContract({
-    address, abi: auctionAbi, functionName: "settle",
-    query: { enabled: stateNum === 3 || (waitingForChain && stateNum === 2), retry: false },
-  });
-  const canSettle = !!settleSimOk;
+  async function repairWalletRpc() {
+    if (typeof window === "undefined") return;
+    const ethereum = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
+    if (!ethereum) return;
+
+    await ethereum.request({
+      method: "wallet_addEthereumChain",
+      params: [{
+        chainId: `0x${CHAIN_ID.toString(16)}`,
+        chainName: robinhoodTestnet.name,
+        nativeCurrency: robinhoodTestnet.nativeCurrency,
+        rpcUrls: [ROBINHOOD_RPC_URL],
+        blockExplorerUrls: [robinhoodTestnet.blockExplorers.default.url],
+      }],
+    });
+  }
 
   const call = (fn: "activate" | "pause" | "settle" | "end") => {
     // Explicit gas for all calls — avoids MetaMask estimation failure on Robinhood testnet
-    writeContract({ address, abi: auctionAbi, functionName: fn, gas: 300_000n });
+    setTxError(null);
+    writeContract({ address, abi: auctionAbi, chainId: CHAIN_ID, functionName: fn, gas: 300_000n });
   };
 
   const fmtTime = (s: number) =>
@@ -583,29 +942,10 @@ function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: s
               {isPending ? "…" : "Pause"}
             </ActionBtn>
           )}
-          {/* Waiting for chain */}
-          {waitingForChain && stateNum === 2 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {canSettle ? (
-                <ActionBtn onClick={() => call("settle")} disabled={isPending} primary>
-                  {isPending ? "Confirming…" : "Settle & Pay Out"}
-                </ActionBtn>
-              ) : (
-                <span style={{ fontSize: 11, color: "#f4b400", textAlign: "center" }}>
-                  ⏳ Waiting for the next block before settle is available ({waitingSecs}s)…
-                </span>
-              )}
-            </div>
-          )}
-          {/* Settle confirmed ENDED */}
           {stateNum === 3 && (
-            canSettle ? (
-              <ActionBtn onClick={() => call("settle")} disabled={isPending} primary>
-                {isPending ? "…" : "Settle & Pay Out"}
-              </ActionBtn>
-            ) : (
-              <span style={{ fontSize: 11, color: "#f4b400" }}>⏳ Finalizing…</span>
-            )
+            <ActionBtn onClick={() => call("settle")} disabled={isPending} primary>
+              {isPending ? "…" : "Settle & Pay Out"}
+            </ActionBtn>
           )}
           <Link href={`/auction/${address}`} style={{
             padding: "6px 14px", borderRadius: 50, fontSize: 13, fontWeight: 600,
@@ -616,6 +956,34 @@ function AuctionRow({ address, onHide }: { address: `0x${string}`; onHide: (a: s
             View ↗
           </Link>
         </div>
+        {txError && (
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+            <p style={{ fontSize: 12, color: "#f87171", margin: 0 }}>{txError}</p>
+            {canRepairRpc && /rate limit|defined limit|rate limited/i.test(txError) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => void repairWalletRpc()}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    border: "none",
+                    background: "#f59e0b",
+                    color: "#000",
+                    fontSize: 12,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Update Wallet RPC
+                </button>
+                <span style={{ color: "#f4b400", fontSize: 11 }}>
+                  Your wallet is likely using Robinhood&apos;s public RPC. Switch it to your Alchemy Robinhood RPC URL.
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

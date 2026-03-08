@@ -61,6 +61,7 @@ export default function SwipeFeed() {
     highestBid: metaResults?.[i * 6 + 4]?.result !== undefined ? Number(metaResults[i * 6 + 4].result) : 0,
     endTime:    metaResults?.[i * 6 + 5]?.result !== undefined ? Number(metaResults[i * 6 + 5].result) : 0,
   })).filter(a => {
+    if (a.state === -1 || a.state === 0) return false; // hide unloaded and LOCKED auctions from public feed
     if (a.state === 3 || a.state === 4) return false; // ENDED or SETTLED
     if (a.state === 2 && a.endTime > 0 && Date.now() / 1000 > a.endTime) return false; // time passed
     return true;
@@ -281,7 +282,7 @@ function AuctionSlide({ auction }: {
         <SidebarAction icon={<IconShare />} label="Share" />
 
         {/* Music disc */}
-        <MusicDisc seller={auction.seller} />
+        <MusicDisc />
       </div>
 
       {/* ── Bottom left info ── */}
@@ -373,7 +374,7 @@ function SidebarAction({ icon, label, href, highlight }: { icon: React.ReactNode
 
 // ── Spinning music disc (TikTok signature element) ────────────────────────────
 
-function MusicDisc({ seller }: { seller: string }) {
+function MusicDisc() {
   return (
     <div style={{
       width: 48, height: 48, borderRadius: "50%",

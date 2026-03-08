@@ -46,11 +46,13 @@ const policies = new Map<string, PolicyRecord>(); // lowercase auction addr → 
 let walletClient: ReturnType<typeof createWalletClient> | null = null;
 let publicClient: ReturnType<typeof createPublicClient> | null = null;
 let agentAddress: `0x${string}` | null = null;
+let agentAccount: ReturnType<typeof privateKeyToAccount> | null = null;
 
 export function initAgent(rpcHttp: string, chain: Chain) {
   walletClient = null;
   publicClient = null;
   agentAddress = null;
+  agentAccount = null;
 
   if (!AGENT_PRIVATE_KEY) {
     console.log("agent: disabled (set AGENT_PRIVATE_KEY to enable)");
@@ -67,6 +69,7 @@ export function initAgent(rpcHttp: string, chain: Chain) {
   }
 
   agentAddress = account.address;
+  agentAccount = account;
   walletClient = createWalletClient({
     account,
     chain,
@@ -165,7 +168,7 @@ async function computeNextBid(
 }
 
 async function placeBid(auctionAddress: string, policy: PolicyRecord, nextBid: bigint) {
-  if (!walletClient || !publicClient || !agentAddress) return;
+  if (!walletClient || !publicClient || !agentAddress || !agentAccount) return;
 
   const allowance = await publicClient.readContract({
     address: policy.currencyAddress,
@@ -176,19 +179,20 @@ async function placeBid(auctionAddress: string, policy: PolicyRecord, nextBid: b
 
   if ((allowance as bigint) < nextBid) {
     console.log(`agent: approving ${policy.maxBid} of ${policy.currencyAddress}`);
-    await walletClient.writeContract({
-      chain: null,
-      account: agentAddress,
+    const approvalHash = await walletClient.writeContract({
+      account: agentAccount,
+      chain: undefined,
       address: policy.currencyAddress,
       abi: erc20Abi,
       functionName: "approve",
       args: [auctionAddress as `0x${string}`, policy.maxBid],
     });
+    await publicClient.waitForTransactionReceipt({ hash: approvalHash });
   }
 
   const hash = await walletClient.writeContract({
-    chain: null,
-    account: agentAddress,
+    account: agentAccount,
+    chain: undefined,
     address: auctionAddress as `0x${string}`,
     abi: auctionAbi,
     functionName: "bid",

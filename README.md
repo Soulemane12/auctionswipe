@@ -71,6 +71,8 @@ Fill in:
 DEPLOYER_PRIVATE_KEY=        # your wallet private key
 ALCHEMY_ARB_SEPOLIA_RPC=     # https://arb-sepolia.g.alchemy.com/v2/<key>
 ALCHEMY_ARB_SEPOLIA_WS=      # wss://arb-sepolia.g.alchemy.com/v2/<key>
+ROBINHOOD_RPC=               # preferred Robinhood RPC (Alchemy recommended)
+NEXT_PUBLIC_ROBINHOOD_RPC=   # same Robinhood RPC for the web app / wallet add-chain flow
 ADMIN_ADDRESS=               # your wallet public address
 NEXT_PUBLIC_ADMIN_ADDRESS=   # same as above
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=  # from cloud.walletconnect.com
