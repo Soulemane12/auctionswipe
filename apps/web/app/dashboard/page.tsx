@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useAccount, useReadContract } from "wagmi";
 import { parseAbi } from "viem";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
@@ -32,7 +32,7 @@ const FONT = "system-ui,-apple-system,sans-serif";
 const BG   = "#000";
 const BORDER = "1px solid #2f3336";
 
-export default function Dashboard() {
+function DashboardContent() {
   const { address, isConnected } = useAccount();
   const searchParams = useSearchParams();
   const serverUrl = getServerUrl();
@@ -315,6 +315,30 @@ export default function Dashboard() {
         {tab === "agent" && <AgentTab policies={policies ?? {}} loading={agentLoading} />}
       </div>
     </div>
+  );
+}
+
+function DashboardFallback() {
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: BG,
+      color: "#fff",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontFamily: FONT,
+    }}>
+      Loading dashboard…
+    </div>
+  );
+}
+
+export default function Dashboard() {
+  return (
+    <Suspense fallback={<DashboardFallback />}>
+      <DashboardContent />
+    </Suspense>
   );
 }
 

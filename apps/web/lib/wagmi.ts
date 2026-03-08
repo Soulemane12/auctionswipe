@@ -1,10 +1,5 @@
 import { connectorsForWallets } from "@rainbow-me/rainbowkit";
-import {
-  metaMaskWallet,
-  walletConnectWallet,
-  coinbaseWallet,
-  rainbowWallet,
-} from "@rainbow-me/rainbowkit/wallets";
+import { metaMaskWallet } from "@rainbow-me/rainbowkit/wallets";
 import { createConfig } from "wagmi";
 import { arbitrumSepolia } from "wagmi/chains";
 import { defineChain, http } from "viem";
@@ -30,15 +25,12 @@ export const robinhoodTestnet = defineChain({
 });
 
 const PROJECT_ID = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "demo";
-const includeWalletConnect = typeof window !== "undefined";
 
 const connectors = connectorsForWallets(
   [
     {
       groupName: "Recommended",
-      wallets: includeWalletConnect
-        ? [metaMaskWallet, coinbaseWallet, rainbowWallet, walletConnectWallet]
-        : [metaMaskWallet, coinbaseWallet, rainbowWallet],
+      wallets: [metaMaskWallet],
     },
   ],
   { appName: "AuctionSwipe", projectId: PROJECT_ID },
