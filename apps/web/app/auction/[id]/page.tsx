@@ -85,7 +85,10 @@ export default function AuctionDetail({
   const addr = auctionAddress as `0x${string}`;
   const serverUrl = getServerUrl();
 
-  const { address: userAddress, isConnected } = useAccount();
+  const { address: userAddress, isConnected: isConnectedRaw } = useAccount();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const isConnected = mounted && isConnectedRaw;
   const [bidAmount, setBidAmount] = useState("");
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
   const [localBids, setLocalBids] = useState<BidRecord[]>([]);
